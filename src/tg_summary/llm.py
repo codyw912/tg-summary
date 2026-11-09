@@ -192,12 +192,13 @@ class StructuredCaller:
             self._redactor = self._redactor_factory()
         return self._redactor
 
-    def prepare(self, user: str) -> tuple[str, RequestMap | None]:
-        """Redaction runs on the calling thread before any request is dispatched (the vault is shared)."""
+    def prepare(self, user: str, protected: Sequence[tuple[int, int]] = ()) -> tuple[str, RequestMap | None]:
+        """Redaction runs on the calling thread before any request is dispatched (the vault is shared).
+        `protected` holds the renderer's format offsets in `user` (a chunk's `format`), which aren't redacted."""
         if not self.external:
             return user, None
         request = RequestMap()
-        return self.redactor.redact(user, request), request
+        return self.redactor.redact(user, request, protected), request
 
     def call(
         self,

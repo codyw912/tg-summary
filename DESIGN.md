@@ -468,6 +468,14 @@ priority), then the statistical detectors (Presidio and, if enabled, PII-Tracer)
 equals. It restores the exact covered text, or the strongest span's canonical value (such as the full name
 behind a first name) when the two cover the same text.
 
+Before that, every detector's spans lose any overlap with the text the renderer itself wrote as format: the
+`#id YYYY-MM-DD HH:MM` that starts each message line, `↪#id` reply references and `--- 3h later ---` gap
+markers. The renderer records those exact offsets with each chunk (`Chunk.format`); nothing is pattern-matched,
+so the same-looking text typed in a message, and anything in a media or link caption, is redacted as usual.
+That format never holds PII, and redacting it would replace the message ids summaries cite; without this,
+PII-Tracer flagged message ids as numbers worth hiding. Sender names and reply snippets stay redactable; the
+member-name rule covers senders.
+
 1. **Escaped look-alikes.** Text in the source that already looks like a placeholder becomes `[LITERAL_n]`
    and is restored verbatim. That covers bracketed text (`[PERSON_3]`) and bare text (`PERSON_3`) for every
    kind the request can emit: the built-in kinds plus any configured entity detected in that request, such

@@ -79,17 +79,29 @@ def render_message(
     """`#id YYYY-MM-DD HH:MM Sender ↪#reply [fwd: X]: body`. Replies outside the chunk get a quoted snippet.
 
     `derived` holds the media and link stage's text per message id; it replaces bare media placeholders."""
+    return _render_line(msg, in_chunk, context, derived)[0]
+
+
+def _render_line(
+    msg: Message, in_chunk: set[int], context: dict[int, Message], derived: Mapping[int, Derived] | None
+) -> tuple[str, list[tuple[int, int]]]:
+    """The line, and where in it this function wrote format rather than chat text: the "#id YYYY-MM-DD HH:MM"
+    stamp and the "↪#id" reply reference. Those offsets, never a pattern match, tell redaction what to skip."""
     derived = derived or {}
-    head = f"#{msg.id} {msg.date.astimezone():%Y-%m-%d %H:%M} {msg.sender or 'Unknown'}"
+    stamp = f"#{msg.id} {msg.date.astimezone():%Y-%m-%d %H:%M}"
+    fmt = [(0, len(stamp))]
+    head = f"{stamp} {msg.sender or 'Unknown'}"
     if msg.reply_to is not None:
-        head += f" ↪#{msg.reply_to}"
+        ref = f"↪#{msg.reply_to}"
+        fmt.append((len(head) + 1, len(head) + 1 + len(ref)))
+        head += f" {ref}"
         target = context.get(msg.reply_to)
         if msg.reply_to not in in_chunk and target is not None:
             head += f' ({target.sender or "Unknown"}: "{snippet(_body(target, derived.get(target.id)))}")'
     if msg.forwarded_from:
         head += f" [fwd: {msg.forwarded_from}]"
     body = _body(msg, derived.get(msg.id)).replace("\n", "\n    ")
-    return f"{head}: {body}"
+    return f"{head}: {body}", fmt
 
 
 def _body(msg: Message, derived: Derived | None = None) -> str:
@@ -106,6 +118,9 @@ class Chunk:
     index: int
     messages: list[Message]
     text: str
+    # (start, end) of the text the renderer added as format (message stamps, reply references, gap markers),
+    # which never holds PII; redaction skips exactly these offsets and nothing that merely looks like them.
+    format: tuple[tuple[int, int], ...] = ()
 
     @property
     def ids(self) -> set[int]:
@@ -173,12 +188,23 @@ def _render(
     budget: int,
 ) -> Chunk:
     ids = {m.id for m in msgs}
-    lines = []
+    lines: list[str] = []
+    fmt: list[tuple[int, int]] = []
+    pos = 0
+
+    def add(line: str, ranges: list[tuple[int, int]]) -> None:
+        nonlocal pos
+        fmt.extend((pos + a, pos + min(b, len(line))) for a, b in ranges if a < len(line))  # _fit may cut the end
+        lines.append(line)
+        pos += len(line) + 1
+
     for prev, msg in zip([None, *msgs], msgs, strict=False):
         if prev is not None and msg.date - prev.date > gap:
-            lines.append(f"--- {_human(msg.date - prev.date)} later ---")
-        lines.append(_fit(render_message(msg, ids, context, derived), budget))
-    return Chunk(index=index, messages=msgs, text="\n".join(lines))
+            marker = f"--- {_human(msg.date - prev.date)} later ---"
+            add(marker, [(0, len(marker))])
+        line, ranges = _render_line(msg, ids, context, derived)
+        add(_fit(line, budget), ranges)
+    return Chunk(index=index, messages=msgs, text="\n".join(lines), format=tuple(fmt))
 
 
 def _split(

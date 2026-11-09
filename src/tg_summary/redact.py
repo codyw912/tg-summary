@@ -114,8 +114,12 @@ class Redactor:
         self._allow = {a.casefold() for a in allow}
         self.counts: Counter[str] = Counter()
 
-    def redact(self, text: str, request: RequestMap) -> str:
-        detected = [s for detect in self._detectors for s in detect(text) if s.value.casefold() not in self._allow]
+    def redact(self, text: str, request: RequestMap, protected: Iterable[tuple[int, int]] = ()) -> str:
+        """`protected`: (start, end) offsets the renderer wrote as format (a `Chunk.format`); detections there are
+        dropped. Only those exact offsets: text that merely looks like format (in a message or a caption) is
+        redacted like any other text."""
+        found = outside_format(text, [s for detect in self._detectors for s in detect(text)], protected)
+        detected = [s for s in found if s.value.casefold() not in self._allow]
         # Escape look-alikes of every kind this request can emit, including configured ones like US_SSN, so a
         # literal "US_SSN_1" in chat text can never be restored to the value behind a real [US_SSN_1].
         kinds = request.kinds() | {s.kind for s in detected}
@@ -320,6 +324,32 @@ def build_redactor(
 
 
 # --- helpers ---------------------------------------------------------------
+
+
+def outside_format(text: str, spans: list[Span], protected: Iterable[tuple[int, int]]) -> list[Span]:
+    """Spans with the renderer's format offsets cut out (message stamps, reply references, gap markers): that
+    text never holds PII, and redacting it would break the message ids summaries cite. A span that was all
+    format disappears; one that straddles format and chat text keeps its chat-text part(s)."""
+    ranges = list(protected)
+    if not ranges:
+        return spans
+    out = []
+    for s in spans:
+        pieces = [(s.start, s.end)]
+        for a, b in ranges:
+            if a < s.end and s.start < b:
+                pieces = [p for x, y in pieces for p in ((x, min(y, a)), (max(x, b), y)) if p[0] < p[1]]
+        if pieces == [(s.start, s.end)]:
+            out.append(s)
+            continue
+        for x, y in pieces:
+            while x < y and text[x].isspace():
+                x += 1
+            while y > x and text[y - 1].isspace():
+                y -= 1
+            if x < y:
+                out.append(Span(x, y, s.kind, text[x:y], s.priority))
+    return out
 
 
 def _covering(spans: list[Span], text: str) -> list[Span]:

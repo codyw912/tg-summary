@@ -22,7 +22,15 @@ from pathlib import Path
 
 from tg_summary.config import Config
 from tg_summary.models import Message
-from tg_summary.redact import Detector, PiiTracerDetector, PresidioDetector, RosterDetector, Span, rule_detector
+from tg_summary.redact import (
+    Detector,
+    PiiTracerDetector,
+    PresidioDetector,
+    RosterDetector,
+    Span,
+    outside_format,
+    rule_detector,
+)
 from tg_summary.segment import Derived, build_chunks
 from tg_summary.store import Store
 from tg_summary.summarize import budget_for
@@ -76,14 +84,10 @@ def run_redaction_eval(
     members = 0
     for i, chunk in enumerate(chunks, 1):
         text = chunk.text
-
-        def kept(spans: Iterable[Span]) -> list[Span]:
-            return [s for s in spans if s.value.casefold() not in allow and s.end > s.start]
-
-        names = kept(roster(text))
-        rules = kept(rule_detector(text))
+        names = _kept(text, roster(text), allow, chunk.format)
+        rules = _kept(text, rule_detector(text), allow, chunk.format)
         members += len(names)
-        found = {name: kept(detect(text)) for name, detect in statistical.items()}
+        found = {name: _kept(text, detect(text), allow, chunk.format) for name, detect in statistical.items()}
         for name, spans in found.items():
             t = tallies[name]
             others = [s for other, ss in found.items() if other != name for s in ss] + names + rules
@@ -103,6 +107,11 @@ def run_redaction_eval(
     print(_summary_table(members, tallies))
     _log(f"wrote {args.out} (contains chat text: keep it private)")
     return 0
+
+
+def _kept(text: str, spans: Iterable[Span], allow: set[str], protected: Iterable[tuple[int, int]]) -> list[Span]:
+    """What redaction would act on: the renderer's format offsets cut out, allowed words dropped."""
+    return [s for s in outside_format(text, list(spans), protected) if s.value.casefold() not in allow]
 
 
 def covers(spans: Iterable[Span], span: Span) -> bool:

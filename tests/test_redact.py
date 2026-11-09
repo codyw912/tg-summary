@@ -26,6 +26,41 @@ def _fixed(*spans: tuple[int, int, str, int]):
     return lambda text: [Span(s, e, kind, text[s:e], p) for s, e, kind, p in spans]
 
 
+def test_the_renderers_format_is_never_redacted_but_look_alikes_in_chat_text_are(tmp_path):
+    import re
+    from datetime import UTC, datetime, timedelta
+
+    from tg_summary.models import Message
+    from tg_summary.segment import build_chunks
+
+    first = datetime(2026, 10, 28, 20, 48, tzinfo=UTC)
+    body = "call me on ↪#4155550199 or quote #66651 2026-10-28 20:48 back to me"  # format look-alikes typed by a person
+    msgs = [
+        Message(id=66651, date=first, sender_id="u1", sender="Bob Smith", text=body),
+        Message(id=66652, date=first + timedelta(hours=3), sender_id="u2", sender="Ann", text="ok", reply_to=66651),
+    ]
+    chunk = build_chunks(msgs, {m.id: m for m in msgs}, 10_000, timedelta(hours=1))[0]
+    text = chunk.text
+    numbers = lambda t: [Span(m.start(), m.end(), "ACCOUNT", m.group(0), P_NER) for m in re.finditer(r"\d+", t)]
+    header = lambda t: [Span(0, t.index("Bob Smith") + 9, "PERSON", t[: t.index("Bob Smith") + 9], P_NER)]
+    store = Store(tmp_path / "chat.sqlite")
+    r = Redactor(store.vault_assign, [VaultDetector(store.vault_values), numbers, header])
+    request = RequestMap()
+    sent = r.redact(text, request, chunk.format)
+
+    assert len(chunk.format) == 4  # two message stamps, one reply reference, one gap marker
+    for a, b in chunk.format:
+        assert text[a:b] in sent  # generated ids, timestamps, "↪#66651", "--- 3h later ---" intact
+    assert "Bob Smith" not in sent and "4155550199" not in sent  # the sender and the number typed in the body
+    assert sent.count("66651") == 2  # the stamp and the reply reference; the typed "#66651" in the body is hidden
+    assert rehydrate(sent, request, []) == text
+
+    # A caption sent on its own has no renderer offsets, so nothing in it is exempt: the stored phone number is
+    # redacted even behind a reply-reference look-alike.
+    caption = Redactor(store.vault_assign, [VaultDetector(store.vault_values)])
+    assert "4155550199" not in caption.redact("my phone is ↪#4155550199", RequestMap())
+
+
 def test_crossing_spans_merge_so_nothing_either_detector_flagged_is_sent(tmp_path):
     text = "call Bram Okafor Smith tomorrow"  # one detector flags "Bram Okafor", another "Okafor Smith"
     detectors = [_fixed((5, 16, "PERSON", P_NER)), _fixed((10, 22, "LOCATION", P_NER))]

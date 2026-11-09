@@ -212,7 +212,7 @@ def _preview(out: Path, chunks: list[Chunk], caller: StructuredCaller, outbound:
         request = RequestMap()
         parts.append(
             f"===== summary chunk {c.index + 1}/{len(chunks)} (sent only if summarize/digest is external) =====\n"
-            f"{redactor.redact(c.text, request)}"
+            f"{redactor.redact(c.text, request, c.format)}"
         )
     for i, o in enumerate(outbound, 1):
         body = o.user or "(no text; only the attachment)"

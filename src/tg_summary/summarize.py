@@ -169,9 +169,9 @@ def summarize(
     splits = 0
     lock = threading.Lock()
 
-    def prepare(text: str) -> tuple:
+    def prepare(chunk: Chunk) -> tuple:
         with lock:  # redaction assigns vault numbers; keep it to one thread at a time
-            return caller.prepare(text)
+            return caller.prepare(chunk.text, chunk.format)
 
     def map_chunk(chunk: Chunk, prepared: tuple, label: str, depth: int) -> list[tuple[Notes, set[int]]]:
         """Notes for the chunk, each with the ids of the (part of the) chunk it summarized: a part's notes may
@@ -187,9 +187,9 @@ def summarize(
             with lock:
                 splits += 1
             _log(f"chunk {label}: {_SPLIT_REASONS[e.code]}; summarizing it in {len(parts)} parts")
-            return [n for j, p in enumerate(parts, 1) for n in map_chunk(p, prepare(p.text), f"{label}.{j}", depth + 1)]
+            return [n for j, p in enumerate(parts, 1) for n in map_chunk(p, prepare(p), f"{label}.{j}", depth + 1)]
 
-    prepared = [prepare(c.text) for c in chunks]
+    prepared = [prepare(c) for c in chunks]
     results: list[list[tuple[Notes, set[int]]]] = [[] for _ in chunks]
     failures: list[tuple[int, LLMError]] = []
     pool = ThreadPoolExecutor(max_workers=max(1, caller.role.concurrency))
