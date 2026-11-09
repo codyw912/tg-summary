@@ -249,6 +249,25 @@ tg-summary-eval compare --db chat.sqlite --config config.toml --variants variant
 On oMLX, use `structured = "prompt"` for these runs: under `json_schema` it does not think at all (see
 [Model endpoints](#model-endpoints)), so thinking variants would silently match the non-thinking ones.
 
+## Comparing redaction detectors
+
+`tg-summary-eval redaction` runs each statistical detector (Presidio, PII-Tracer) on its own over the chunk
+text a hosted summarizer would get, next to the always-on member-name and URL/email/handle rules. It calls the
+detectors directly, so nothing is redacted, sent or added to the vault.
+
+```sh
+tg-summary-eval redaction --db chat.sqlite --config config.toml --last 2000 --out reports/redaction-eval.md
+```
+
+- **The terminal gets counts only**: spans per detector, member-name mentions each covers completely on its
+  own (the member list gives these labels for free; a first name alone doesn't count), hits on a keep-list of
+  names that should stay readable (AI tools by default; `--keep` to change it), and spans that the other
+  detector and the rules together don't cover completely. Coverage is per character, never just overlap.
+- **The report contains chat text**, by design: each keep-list hit, and a sample (`--sample`, default 50) of
+  spans not fully covered by others, shown in their line with a box to mark "PII" or "not PII"; spans that
+  reach beyond another detector's find (a surname after a first name) are marked "partly covered". Labelling
+  those settles what each detector adds. It goes to `reports/`, which is git-ignored.
+
 ## Jobs and roles
 
 Local and hosted models are not two copies of one pipeline. Each job is a **role**, and each role points at

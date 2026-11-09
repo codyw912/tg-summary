@@ -131,6 +131,7 @@ messages take hours.
 | `tg-summary preview-redaction` | Write the redacted chunks and media and link requests a run would send, without sending anything (not merge or digest requests) |
 | `tg-summary-eval compare` | Run several model settings on the same window and compare metrics (development tool) |
 | `tg-summary-eval judge` | Check digest claims against the messages they cite (development tool) |
+| `tg-summary-eval redaction` | Compare redaction detectors on your chat; writes a private report for checking their finds (development tool) |
 
 ## Configuration
 
