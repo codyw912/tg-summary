@@ -269,9 +269,37 @@ tg-summary-eval redaction --db chat.sqlite --config config.toml --last 2000 --ou
   highlight), not PII, or a public figure, which is fine to redact (see [Public figures](#public-figures)).
   Spans that reach beyond another detector's find (a surname after a first name) are marked "partly
   covered". Tallies update as you label, labels are kept in the browser's local storage when it allows that
-  (a banner says when it doesn't), and a box holds the counts alone to copy. The page is self-contained (its
-  content policy blocks every network request) and inserts chat text as plain text, never as HTML. It goes
-  to `reports/`, which is git-ignored.
+  (a banner says when it doesn't), and a box holds the counts alone to copy, broken down by kind. The page
+  is self-contained (its content policy blocks every network request) and inserts chat text as plain text,
+  never as HTML. It goes to `reports/`, which is git-ignored.
+
+### Results on one chat
+
+A public group chat, the last 2,000 messages, labelled by hand. Labelling rules: names of public figures get
+their own label (they are redacted on purpose, see [Public figures](#public-figures)); a place is PII when it
+locates a specific person at city level or finer, and not PII when mentioned generally or at country level.
+
+| Run | Spans only this detector found | Real PII | Public figure | Not PII | Keep-list hits, not PII |
+|---|---|---:|---:|---:|---:|
+| Both at defaults | Presidio: 245 (100 labelled) | 0 | 7 | 93 | 100 of 100 labelled (110 found) |
+| Both at defaults | PII-Tracer: 34 | 9 | 8 | 17 | 29 of 29 |
+| Presidio without names and places | Presidio: 30, all URLs | 0 | 0 | 30 | 57 of 57 |
+| Presidio without names and places | PII-Tracer: 55 | 13 | 21 | 21 | 29 of 29 |
+
+The two kinds of count overlap: a span can be both a keep-list hit and not covered by others.
+
+- **Presidio's name and place detection added no real PII** beyond PII-Tracer and the rules (0 in 100
+  labelled, so at most about 3% of its 245, at 95% confidence), while most of what it alone found was
+  harmful over-redaction: tool names, general places, ordinary words.
+- **PII-Tracer carries names and places on its own.** With Presidio's turned off, the spans the two used to
+  share moved to PII-Tracer's list and were mostly public figures and real PII. Its "other PII" label held
+  most of its real finds (9 of 13), so no label is worth turning off; its noise is spread across kinds.
+- **Presidio's URL recognizer** flagged dotted names (all 30 of its own finds were not PII). The URL rule now
+  covers bare links with a path, so it is not needed.
+- **What this does not show:** the spans every source found were not labelled one by one, it is one chat and
+  one labeller, and Presidio's number formats (phones, cards, IBANs, IP addresses) found nothing in these
+  messages, so their value is unmeasured. The defaults stay as they are (Presidio, since PII-Tracer is an
+  optional install); `config.example.toml` shows the setting these results support.
 
 ## Jobs and roles
 
