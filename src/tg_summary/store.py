@@ -216,9 +216,10 @@ class Store:
 
     # --- redaction vault -----------------------------------------------
 
-    def vault_values(self) -> list[tuple[str, str]]:
+    def vault_values(self) -> list[tuple[str, str, str]]:
+        """(kind, norm, value) of every value redacted so far; `norm` is the identity it was numbered by."""
         with self._lock:
-            return self._db.execute("SELECT kind, value FROM vault").fetchall()
+            return self._db.execute("SELECT kind, norm, value FROM vault").fetchall()
 
     def vault_assign(self, kind: str, norm: str, value: str) -> int:
         """Stable number for (kind, normalized value); assigns the next free number on first sight."""

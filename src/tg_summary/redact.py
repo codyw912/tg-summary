@@ -78,9 +78,10 @@ class Span:
     kind: str
     value: str  # canonical value restored on rehydration (e.g. full name for a first-name match)
     priority: int
-    # Set on a span merged from several that reaches beyond its strongest one: its identity is its whole text,
-    # not the kind's normalization (a PHONE's digits-only form would make "Alice 1234" equal "Bob 1234").
-    merged: bool = False
+    # Identity in the vault, when it isn't the kind's usual normalization: a merged region that reaches beyond
+    # its strongest span is identified by its whole text (a PHONE's digits-only form would make "Alice 1234"
+    # equal "Bob 1234"), and vault matches carry the identity stored with them.
+    norm: str | None = None
 
 
 Detector = Callable[[str], Iterable[Span]]
@@ -136,7 +137,7 @@ class Redactor:
     def _token(self, span: Span, request: RequestMap) -> str:
         if span.kind == LITERAL:
             return request.literal(span.value)
-        norm = " ".join(span.value.split()) if span.merged else _normalize(span.kind, span.value)
+        norm = span.norm if span.norm is not None else _normalize(span.kind, span.value)
         n = self._assign(span.kind, norm, span.value)
         token = f"[{span.kind}_{n}]"
         request.tokens[token] = span.value
@@ -234,17 +235,17 @@ class VaultDetector:
     known values exactly closes that gap for later requests in the same run and in future runs.
     """
 
-    def __init__(self, known: Callable[[], list[tuple[str, str]]]):
+    def __init__(self, known: Callable[[], list[tuple[str, str, str]]]):
         self._known = known
         self._size = -1
         self._re: re.Pattern[str] | None = None
-        self._kinds: dict[str, tuple[str, str]] = {}
+        self._kinds: dict[str, tuple[str, str, str]] = {}
 
     def __call__(self, text: str) -> Iterable[Span]:
         rows = self._known()
         if len(rows) != self._size:  # the vault only grows
             self._size = len(rows)
-            self._kinds = {value.casefold(): (kind, value) for kind, value in rows if value.strip()}
+            self._kinds = {value.casefold(): (kind, norm, value) for kind, norm, value in rows if value.strip()}
             ordered = sorted(self._kinds, key=len, reverse=True)
             self._re = (
                 re.compile(r"(?<!\w)(?:" + "|".join(re.escape(v) for v in ordered) + r")" + _NAME_END, re.IGNORECASE)
@@ -255,8 +256,8 @@ class VaultDetector:
             return []
         spans = []
         for m in self._re.finditer(text):
-            kind, value = self._kinds[m.group(0).casefold()]
-            spans.append(Span(m.start(), m.end(), kind, value, P_RULE))
+            kind, norm, value = self._kinds[m.group(0).casefold()]
+            spans.append(Span(m.start(), m.end(), kind, value, P_RULE, norm))
         return spans
 
 
@@ -286,7 +287,7 @@ class PresidioDetector:
 
 def build_redactor(
     assign: Assign,
-    known: Callable[[], list[tuple[str, str]]],
+    known: Callable[[], list[tuple[str, str, str]]],
     member_names: Iterable[str],
     settings: RedactionSettings,
 ) -> Redactor:
@@ -327,8 +328,9 @@ def _merge(group: list[Span], end: int, text: str) -> Span:
     start = group[0].start
     best = max(group, key=lambda s: (s.priority, s.end - s.start, -s.start))
     if (best.start, best.end) == (start, end):
-        return Span(start, end, best.kind, best.value, best.priority)
-    return Span(start, end, best.kind, text[start:end], best.priority, merged=True)
+        return best
+    value = text[start:end]
+    return Span(start, end, best.kind, value, best.priority, " ".join(value.split()).casefold())
 
 
 def _normalize(kind: str, value: str) -> str:

@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tg_summary.redact import P_NER, P_RULE, Redactor, RequestMap, RosterDetector, Span, rehydrate, rule_detector
+from tg_summary.redact import (
+    P_NER,
+    P_RULE,
+    Redactor,
+    RequestMap,
+    RosterDetector,
+    Span,
+    VaultDetector,
+    rehydrate,
+    rule_detector,
+)
 from tg_summary.store import Store
 
 
@@ -26,19 +36,23 @@ def test_crossing_spans_merge_so_nothing_either_detector_flagged_is_sent(tmp_pat
     assert rehydrate(sent, request, []) == text
 
 
-def test_merged_regions_with_the_same_phone_number_stay_distinct(tmp_path):
+def test_merged_regions_with_the_same_phone_number_stay_distinct_across_requests(tmp_path):
     # A phone number (high priority) crossing a low-priority span on each side: both merged regions keep the
     # PHONE kind, but "Alice 1234" and "Bob 1234" must not share a placeholder, or one restores as the other.
+    # The second request finds both through the vault, which must keep their identities apart too.
+    store = Store(tmp_path / "chat.sqlite")
     text = "Alice 1234; Bob 1234"
     detectors = [
+        VaultDetector(store.vault_values),
         _fixed((6, 10, "PHONE", P_RULE), (16, 20, "PHONE", P_RULE)),
         _fixed((0, 8, "PERSON", P_NER), (12, 18, "PERSON", P_NER)),
     ]
-    r = Redactor(Store(tmp_path / "chat.sqlite").vault_assign, detectors)
-    request = RequestMap()
-    sent = r.redact(text, request)
-    assert sent == "[PHONE_1]; [PHONE_2]"
-    assert rehydrate(sent, request, []) == text
+    r = Redactor(store.vault_assign, detectors)
+    for _ in range(2):
+        request = RequestMap()
+        sent = r.redact(text, request)
+        assert sent == "[PHONE_1]; [PHONE_2]"
+        assert rehydrate(sent, request, []) == text
 
 
 def test_a_name_inside_a_longer_lower_priority_span_covers_the_whole_span(tmp_path):
