@@ -445,8 +445,9 @@ prompt contains no chat content and is sent as written.
 Listed in priority order. Overlapping spans, whether they cross or one contains another, merge into one
 placeholder that covers all of them, so nothing any detector flagged is sent. The placeholder takes its kind
 from the strongest span: escaped look-alikes first, then member names, rules and known values (which share a
-priority), then Presidio, and the longer span among equals. It restores the exact covered text, or the
-strongest span's canonical value (such as the full name behind a first name) when the two cover the same text.
+priority), then the statistical detectors (Presidio and, if enabled, PII-Tracer), and the longer span among
+equals. It restores the exact covered text, or the strongest span's canonical value (such as the full name
+behind a first name) when the two cover the same text.
 
 1. **Escaped look-alikes.** Text in the source that already looks like a placeholder becomes `[LITERAL_n]`
    and is restored verbatim. That covers bracketed text (`[PERSON_3]`) and bare text (`PERSON_3`) for every
@@ -463,7 +464,21 @@ strongest span's canonical value (such as the full name behind a first name) whe
    `redaction.allow`.
 5. **Presidio** with spaCy `en_core_web_md`: people, places, phone numbers, emails, IP addresses, card
    numbers, IBANs and URLs. The score threshold defaults to 0.35, because Presidio scores phone numbers with
-   no nearby context words at 0.4.
+   no nearby context words at 0.4. On by default (`redaction.detectors`).
+6. **PII-Tracer** (optional; `uv sync --extra pii`, then add `"pii_tracer"` to `redaction.detectors`): a 0.6B
+   Qwen3 encoder from Perplexity trained on multilingual assistant conversations (MIT,
+   [paper](https://arxiv.org/abs/2609.22200)). It tags people (including lowercase names and @handles),
+   emails, phones, private addresses, private URLs, dates, account numbers, secrets and other PII; plain dates
+   are left out by default because summaries need them. It does not flag public places or product names.
+   - `pii_tracer.py` loads the weights from a pinned revision of the Hugging Face repo and re-implements its
+     small inference code (bidirectional encoder, token head, constrained BIOES Viterbi in numpy) instead of
+     running the repo's code. Checked against the reference: identical token ids and spans, logits within 3e-6.
+   - Text goes in windows of whole lines up to 3,500 tokens (the model reads 4,096 and is weaker on very short
+     inputs). Each window is recounted with the real tokenizer (its built-in truncation switched off) and
+     halved until it fits, so dense text such as CJK or code is never cut off unread. Every span is widened to
+     whole words, so a cut-short span ("ave" of "dave") hides the whole word.
+   - Speed, measured on an M2 Max with synthetic chat: about 31 ms per message on the Apple GPU when messages
+     are joined, about 130 ms on the CPU. An MLX version, checked against this one, is planned.
 
 ### Two lookups
 

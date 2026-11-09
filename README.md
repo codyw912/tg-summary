@@ -56,7 +56,9 @@ Redaction covers chat text only. Media and links that you send to an external en
   The provider's own browsing tool opens the page; this tool never fetches pages itself.
 
 Redaction uses [Presidio](https://microsoft.github.io/presidio/), an English spaCy model and the chat's
-member list. It will miss things, and a mix of ordinary details can still identify someone.
+member list. Optionally, it also uses [PII-Tracer](https://huggingface.co/perplexity-ai/PII-Tracer), a small
+local model trained on conversations (`uv sync --extra pii`, then `detectors = ["presidio", "pii_tracer"]` in
+the config). It will miss things, and a mix of ordinary details can still identify someone.
 `tg-summary preview-redaction` writes the redacted chunk text and media and link requests a run would send,
 without sending anything, so you can check them. It doesn't show merge and digest requests, which carry
 model-written notes rather than chat lines, so it's a spot check, not a complete record. The database logs
@@ -72,6 +74,8 @@ each completed external request; one that fails in transit (for example a timeou
   - an Anthropic API key for describing images and reading links (other providers need extra config);
   - `ffmpeg` for voice notes and videos;
   - a speech-to-text server with an OpenAI-style `/v1/audio/transcriptions` endpoint.
+- Optional, for stronger redaction: PII-Tracer (`uv sync --extra pii` installs PyTorch, about 800 MB, and the
+  first run downloads about 1.2 GB of weights).
 
 ## Getting started
 

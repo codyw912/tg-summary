@@ -13,6 +13,20 @@ Structured = Literal["json_schema", "prompt"]
 Effort = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
 EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
 
+# PII-Tracer's labels (kept here so the config validates without the optional install).
+PII_TRACER_LABELS = (
+    "private_person",
+    "private_email",
+    "private_phone",
+    "private_address",
+    "private_url",
+    "private_date",
+    "account_number",
+    "secret",
+    "other_pii",
+)
+PII_TRACER_DEFAULT_LABELS = tuple(label for label in PII_TRACER_LABELS if label != "private_date")
+
 DEFAULT_ENTITIES = [
     "PERSON",
     "LOCATION",
@@ -106,6 +120,19 @@ class RedactionSettings:
     score_threshold: float = 0.35  # Presidio scores phone numbers without nearby context words at 0.4
     entities: list[str] = field(default_factory=lambda: list(DEFAULT_ENTITIES))
     allow: list[str] = field(default_factory=lambda: ["Deleted Account"])  # never redacted
+    # Statistical detectors, on top of member names, rules and known values: "presidio", "pii_tracer" (optional
+    # install: uv sync --extra pii).
+    detectors: list[str] = field(default_factory=lambda: ["presidio"])
+    # PII-Tracer labels to redact. Plain dates are left out by default: they matter to summaries.
+    pii_tracer_labels: list[str] = field(default_factory=lambda: list(PII_TRACER_DEFAULT_LABELS))
+    pii_tracer_device: str = "auto"  # "auto" picks the Apple GPU (mps), then CUDA, then the CPU
+
+    def __post_init__(self) -> None:
+        for d in self.detectors:
+            _check(d, ("presidio", "pii_tracer"), "redaction.detectors")
+        for label in self.pii_tracer_labels:
+            _check(label, PII_TRACER_LABELS, "redaction.pii_tracer_labels")
+        _check(self.pii_tracer_device, ("auto", "mps", "cuda", "cpu"), "redaction.pii_tracer_device")
 
 
 OPTIONAL_ROLES = ("transcribe", "describe_media", "read_link", "digest", "judge")

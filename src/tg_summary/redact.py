@@ -285,6 +285,22 @@ class PresidioDetector:
         return [Span(r.start, r.end, _kind(r.entity_type), text[r.start : r.end], P_NER) for r in results]
 
 
+class PiiTracerDetector:
+    """PII-Tracer, a local model trained on conversations (optional install: `uv sync --extra pii`)."""
+
+    def __init__(self, settings: RedactionSettings):
+        from tg_summary.pii_tracer import PiiTracer
+
+        self._model = PiiTracer(settings.pii_tracer_device)
+        self._labels = settings.pii_tracer_labels
+
+    def __call__(self, text: str) -> Iterable[Span]:
+        from tg_summary.pii_tracer import spans_for
+
+        found = self._model.find(text)
+        return [Span(s, e, kind, text[s:e], P_NER) for s, e, kind in spans_for(text, found, self._labels)]
+
+
 def build_redactor(
     assign: Assign,
     known: Callable[[], list[tuple[str, str, str]]],
@@ -295,8 +311,11 @@ def build_redactor(
         RosterDetector(member_names, settings.allow),
         rule_detector,
         VaultDetector(known),
-        PresidioDetector(settings),
     ]
+    if "presidio" in settings.detectors:
+        detectors.append(PresidioDetector(settings))
+    if "pii_tracer" in settings.detectors:
+        detectors.append(PiiTracerDetector(settings))
     return Redactor(assign, detectors, settings.allow)
 
 
