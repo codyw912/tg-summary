@@ -287,13 +287,16 @@ function tally() {
   const t = el("table"), head = el("tr"); head.append(el("th", null, "Section"));
   const rows = [], lines = [DATA.intro, DATA.summary, ""];
   for (const sec of DATA.sections) {
-    const counts = sec.options.map(() => 0); let open = 0;
-    sec.items.forEach((_, i) => { const v = labels[sec.id + ":" + i]; if (v === undefined) open++; else counts[v]++; });
+    const counts = sec.options.map(() => 0); let open = 0; const byKind = {};
+    sec.items.forEach((it, i) => { const v = labels[sec.id + ":" + i]; if (v === undefined) open++; else counts[v]++;
+      if (it.kind) { const k = byKind[it.kind] ??= sec.options.map(() => 0).concat(0); k[v === undefined ? sec.options.length : v]++; } });
     const tr = el("tr"); tr.append(el("td", null, sec.title));
     sec.options.forEach((o, n) => tr.append(el("td", null, `${o.split(" (")[0]}: ${counts[n]}`)));
     tr.append(el("td", null, `unlabelled: ${open}`)); rows.push(tr);
     lines.push(`${sec.title} (${sec.items.length} of ${sec.total}): ` +
       sec.options.map((o, n) => `${o} ${counts[n]}`).join(", ") + `, unlabelled ${open}`);
+    for (const [kind, k] of Object.entries(byKind)) lines.push(`  ${kind}: ` +
+      sec.options.map((o, n) => `${o.split(" (")[0]} ${k[n]}`).join(", ") + `, unlabelled ${k[sec.options.length]}`);
   }
   t.append(...rows); const box = document.getElementById("tally"); box.replaceChildren(t);
   document.getElementById("counts").value = lines.join("\\n");
