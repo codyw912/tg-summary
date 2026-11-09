@@ -465,20 +465,31 @@ behind a first name) when the two cover the same text.
 5. **Presidio** with spaCy `en_core_web_md`: people, places, phone numbers, emails, IP addresses, card
    numbers, IBANs and URLs. The score threshold defaults to 0.35, because Presidio scores phone numbers with
    no nearby context words at 0.4. On by default (`redaction.detectors`).
-6. **PII-Tracer** (optional; `uv sync --extra pii`, then add `"pii_tracer"` to `redaction.detectors`): a 0.6B
+6. **PII-Tracer** (optional; install a runtime, then add `"pii_tracer"` to `redaction.detectors`): a 0.6B
    Qwen3 encoder from Perplexity trained on multilingual assistant conversations (MIT,
    [paper](https://arxiv.org/abs/2609.22200)). It tags people (including lowercase names and @handles),
    emails, phones, private addresses, private URLs, dates, account numbers, secrets and other PII; plain dates
-   are left out by default because summaries need them. It does not flag public places or product names.
+   are left out by default because summaries need them. Its labels target private information, not public
+   places or products, so it mostly leaves those alone, but false positives still happen: in a synthetic test
+   it tagged "winamp" as a person when that message stood alone.
    - `pii_tracer.py` loads the weights from a pinned revision of the Hugging Face repo and re-implements its
      small inference code (bidirectional encoder, token head, constrained BIOES Viterbi in numpy) instead of
      running the repo's code. Checked against the reference: identical token ids and spans, logits within 3e-6.
+   - Two runtimes share the tokenizer, windows, decoder and weights; only the encoder differs.
+     `redaction.pii_tracer_runtime = "auto"` uses MLX when it is installed on Apple Silicon, PyTorch otherwise.
+     - **MLX** (`uv sync --extra pii-mlx`, about 235 MB): the Qwen3 encoder written directly in MLX.
+     - **PyTorch** (`uv sync --extra pii`, about 800 MB): transformers' Qwen3Model run bidirectionally, on the
+       Apple GPU, CUDA or the CPU.
+     - On synthetic chat both give identical spans. Their logits differ by as much as PyTorch's own GPU and CPU
+       kernels differ from each other (mean 0.016 against 0.015). A test runs a tiny random model through both
+       in fp32 and requires agreement within 1e-3, which catches structural mistakes such as the wrong RoPE layout.
    - Text goes in windows of whole lines up to 3,500 tokens (the model reads 4,096 and is weaker on very short
      inputs). Each window is recounted with the real tokenizer (its built-in truncation switched off) and
      halved until it fits, so dense text such as CJK or code is never cut off unread. Every span is widened to
      whole words, so a cut-short span ("ave" of "dave") hides the whole word.
-   - Speed, measured on an M2 Max with synthetic chat: about 31 ms per message on the Apple GPU when messages
-     are joined, about 130 ms on the CPU. An MLX version, checked against this one, is planned.
+   - Speed, measured on an M2 Max with about 170 synthetic chat lines joined: MLX about 5.5 ms per message,
+     PyTorch on the Apple GPU about 12 ms, PyTorch on the CPU about 130 ms. A whole `preview-redaction` run of
+     the small synthetic chat took about 2 s on MLX and about 16 s on PyTorch, mostly loading the model.
 
 ### Two lookups
 

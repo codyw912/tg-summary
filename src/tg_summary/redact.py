@@ -291,7 +291,7 @@ class PiiTracerDetector:
     def __init__(self, settings: RedactionSettings):
         from tg_summary.pii_tracer import PiiTracer
 
-        self._model = PiiTracer(settings.pii_tracer_device)
+        self._model = PiiTracer(settings.pii_tracer_runtime, settings.pii_tracer_device)
         self._labels = settings.pii_tracer_labels
 
     def __call__(self, text: str) -> Iterable[Span]:

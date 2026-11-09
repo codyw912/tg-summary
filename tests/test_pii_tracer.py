@@ -1,4 +1,4 @@
-"""PII-Tracer's decoding, windowing and span handling, with the model replaced: no download, no torch."""
+"""PII-Tracer's decoding, windowing, span handling and runtimes, with the real model replaced: no download."""
 
 from __future__ import annotations
 
@@ -93,3 +93,52 @@ def test_unknown_detectors_and_labels_are_rejected():
         RedactionSettings(detectors=["gliner"])
     with pytest.raises(ValueError, match=r"redaction\.pii_tracer_labels"):
         RedactionSettings(pii_tracer_labels=["person"])
+
+
+def test_mlx_and_pytorch_encoders_compute_the_same_model(tmp_path):
+    # A tiny random Qwen3 encoder in fp32, run by both runtimes: any difference in how either builds the model
+    # (RoPE layout, q/k norms, grouped-query attention, the bidirectional mask) shows up far above fp32 noise.
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    pytest.importorskip("mlx.core")
+    from safetensors.numpy import save_file
+
+    from tg_summary.pii_tracer import _MlxEncoder, _TorchEncoder
+
+    hidden, layers, heads, kv_heads, head_dim, ffn = 32, 2, 4, 2, 8, 64
+    backbone = {
+        "vocab_size": 50, "hidden_size": hidden, "intermediate_size": ffn, "num_hidden_layers": layers,
+        "num_attention_heads": heads, "num_key_value_heads": kv_heads, "head_dim": head_dim,
+        "rms_norm_eps": 1e-6, "rope_parameters": {"rope_theta": 10000.0, "rope_type": "default"},
+        "max_position_embeddings": 128, "hidden_act": "silu", "attention_bias": False, "tie_word_embeddings": True,
+    }  # fmt: skip
+    rng = np.random.default_rng(0)
+
+    def w(*shape):
+        return rng.normal(0, 0.3, shape).astype(np.float32)
+
+    weights = {"backbone.embed_tokens.weight": w(50, hidden), "backbone.norm.weight": 1 + w(hidden)}
+    for i in range(layers):
+        p = f"backbone.layers.{i}."
+        weights |= {
+            p + "input_layernorm.weight": 1 + w(hidden), p + "post_attention_layernorm.weight": 1 + w(hidden),
+            p + "self_attn.q_proj.weight": w(heads * head_dim, hidden),
+            p + "self_attn.k_proj.weight": w(kv_heads * head_dim, hidden),
+            p + "self_attn.v_proj.weight": w(kv_heads * head_dim, hidden),
+            p + "self_attn.o_proj.weight": w(hidden, heads * head_dim),
+            p + "self_attn.q_norm.weight": 1 + w(head_dim), p + "self_attn.k_norm.weight": 1 + w(head_dim),
+            p + "mlp.gate_proj.weight": w(ffn, hidden), p + "mlp.up_proj.weight": w(ffn, hidden),
+            p + "mlp.down_proj.weight": w(hidden, ffn),
+        }  # fmt: skip
+    weights |= {
+        "token_cls_head.weight": w(len(LABELS), hidden), "token_cls_head.bias": w(len(LABELS)),
+        "viterbi.b_bias": np.zeros(1, np.float32), "viterbi.e_bias": np.zeros(1, np.float32),
+    }  # fmt: skip
+    path = str(tmp_path / "tiny.safetensors")
+    save_file(weights, path)
+
+    ids = [int(i) for i in rng.integers(0, 50, 40)]
+    reference = _TorchEncoder(path, backbone, "cpu", dtype="float32").logits(ids)
+    mlx = _MlxEncoder(path, backbone, "auto").logits(ids)
+    assert reference.shape == mlx.shape == (40, len(LABELS))
+    assert np.abs(reference - mlx).max() < 1e-3

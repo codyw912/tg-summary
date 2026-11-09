@@ -125,13 +125,15 @@ class RedactionSettings:
     detectors: list[str] = field(default_factory=lambda: ["presidio"])
     # PII-Tracer labels to redact. Plain dates are left out by default: they matter to summaries.
     pii_tracer_labels: list[str] = field(default_factory=lambda: list(PII_TRACER_DEFAULT_LABELS))
-    pii_tracer_device: str = "auto"  # "auto" picks the Apple GPU (mps), then CUDA, then the CPU
+    pii_tracer_runtime: str = "auto"  # "mlx" (Apple Silicon), "torch", or "auto": MLX when installed on Apple Silicon
+    pii_tracer_device: str = "auto"  # PyTorch only: "auto" picks the Apple GPU (mps), then CUDA, then the CPU
 
     def __post_init__(self) -> None:
         for d in self.detectors:
             _check(d, ("presidio", "pii_tracer"), "redaction.detectors")
         for label in self.pii_tracer_labels:
             _check(label, PII_TRACER_LABELS, "redaction.pii_tracer_labels")
+        _check(self.pii_tracer_runtime, ("auto", "mlx", "torch"), "redaction.pii_tracer_runtime")
         _check(self.pii_tracer_device, ("auto", "mps", "cuda", "cpu"), "redaction.pii_tracer_device")
 
 

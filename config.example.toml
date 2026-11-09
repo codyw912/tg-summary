@@ -70,13 +70,15 @@ score_threshold = 0.35   # lower redacts more; Presidio scores bare phone number
 # Words that must never be redacted, e.g. a member called "Will" whose first name is also a common word.
 allow = ["Deleted Account"]
 # Statistical detectors, on top of member names, URL/email/handle rules and known values. "pii_tracer" is
-# PII-Tracer, a local model trained on conversations: install it with `uv sync --extra pii` (PyTorch,
-# about 800 MB); its first run downloads about 1.2 GB of weights. It uses the Apple GPU when there is one.
+# PII-Tracer, a local model trained on conversations. Install one runtime: on Apple Silicon
+# `uv sync --extra pii-mlx` (MLX, about 235 MB), anywhere else `uv sync --extra pii` (PyTorch, about 800 MB).
+# Its first run downloads about 1.2 GB of weights, shared by both runtimes.
 detectors = ["presidio"]
 # detectors = ["presidio", "pii_tracer"]
 # PII-Tracer labels to redact; plain dates ("private_date") are left out by default because summaries need them.
 # pii_tracer_labels = ["private_person", "private_email", "private_phone", "private_address", "private_url",
 #                      "account_number", "secret", "other_pii"]
+# pii_tracer_runtime = "auto"   # "mlx", "torch", or "auto" (MLX when installed on Apple Silicon)
 
 # --- Media and link stage (optional). Runs before chunking when any of these roles is configured. ---
 # Hosted calls get one item plus its message text (redacted for trust = "external"); media files and the

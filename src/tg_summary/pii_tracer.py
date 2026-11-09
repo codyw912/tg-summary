@@ -168,90 +168,185 @@ def whole_words(text: str, start: int, end: int) -> tuple[int, int]:
     return start, end
 
 
-# --- the model (PyTorch) -----------------------------------------------------------------------------------
+# --- the model ---------------------------------------------------------------------------------------------
+
+_INSTALL = "uv sync --extra pii-mlx (Apple Silicon) or uv sync --extra pii (PyTorch, any platform)"
+
+
+def mlx_available() -> bool:
+    import importlib.util
+    import platform
+
+    return sys.platform == "darwin" and platform.machine() == "arm64" and importlib.util.find_spec("mlx") is not None
 
 
 class PiiTracer:
-    """The model, its tokenizer and the device it runs on. Loads lazily: the first call downloads the weights."""
+    """Tokenizer, windows and decoding, shared by both runtimes; the encoder turns token ids into tag logits.
 
-    def __init__(self, device: str = "auto"):
+    `runtime` is "mlx" (Apple Silicon), "torch", or "auto" (MLX when it is installed on Apple Silicon). `device`
+    applies to PyTorch only. Loads lazily: the first call downloads the weights, which both runtimes share."""
+
+    def __init__(self, runtime: str = "auto", device: str = "auto"):
+        self._runtime_setting = runtime
         self._device_setting = device
-        self._model: Any = None
+        self._encoder: Any = None
+        self.runtime: str | None = None
 
     def _load(self) -> None:
+        runtime = self._runtime_setting
+        if runtime == "auto":
+            runtime = "mlx" if mlx_available() else "torch"
         try:
-            import torch
             from huggingface_hub import hf_hub_download
-            from safetensors.torch import load_file
             from tokenizers import Tokenizer
-            from transformers import Qwen3Config, Qwen3Model
-        except ImportError as e:
-            raise RuntimeError("the pii_tracer detector needs the optional dependencies: uv sync --extra pii") from e
 
-        print("loading PII-Tracer (the first run downloads about 1.2 GB)", file=sys.stderr, flush=True)
+            encoder_class = _MlxEncoder if runtime == "mlx" else _TorchEncoder
+            encoder_class.check_installed()
+        except ImportError as e:
+            raise RuntimeError(f"the pii_tracer detector ({runtime}) needs optional dependencies: {_INSTALL}") from e
+
+        print(f"loading PII-Tracer on {runtime} (the first run downloads about 1.2 GB)", file=sys.stderr, flush=True)
         path = {
             name: hf_hub_download(REPO, name, revision=REVISION)
             for name in ("config.json", "tokenizer.json", "model.safetensors")
         }
         config = json.loads(Path(path["config.json"]).read_text(encoding="utf-8"))
-        backbone_config = Qwen3Config.from_dict(config["backbone"])
-        backbone_config.is_causal = False  # an encoder: every token sees the whole window
-        backbone_config._attn_implementation = "sdpa"
-        weights = load_file(path["model.safetensors"])
-        backbone = Qwen3Model(backbone_config)
-        # Weights in bf16 like the checkpoint; the rotary position buffers stay fp32, as transformers keeps them.
-        # Casting those too shifts every logit (by up to 0.25 against the reference code).
-        buffers = {name: b.clone() for name, b in backbone.named_buffers()}
-        backbone = backbone.to(torch.bfloat16)
-        for name, b in buffers.items():
-            owner, _, attr = name.rpartition(".")
-            setattr(backbone.get_submodule(owner), attr, b)
-        missing, unexpected = backbone.load_state_dict(
-            {k.removeprefix("backbone."): v for k, v in weights.items() if k.startswith("backbone.")}, strict=False
-        )
-        if unexpected or any("inv_freq" not in k for k in missing):
-            raise RuntimeError(f"PII-Tracer weights don't match the model: {missing[:3]} {unexpected[:3]}")
-
-        device = self._device_setting
-        if device == "auto":
-            device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
-        self._torch = torch
-        self._device = device
-        self._model = backbone.to(device).eval()
-        self._head_w = weights["token_cls_head.weight"].float().to(device)
-        self._head_b = weights["token_cls_head.bias"].float().to(device)
-        self._biases = (float(weights["viterbi.b_bias"]), float(weights["viterbi.e_bias"]))
+        self._encoder = encoder_class(path["model.safetensors"], config["backbone"], self._device_setting)
         self._tokenizer = Tokenizer.from_file(path["tokenizer.json"])
         # The file truncates at 4,096 tokens. Counts must be exact and nothing may be cut silently: text the model
         # doesn't read is text nobody checked.
         self._tokenizer.no_truncation()
+        self.runtime = runtime
 
     def count_tokens(self, lines: list[str]) -> list[int]:
-        if self._model is None:
+        if self._encoder is None:
             self._load()
         return [len(e.ids) for e in self._tokenizer.encode_batch(lines, add_special_tokens=False)]
 
+    def logits(self, piece: str) -> tuple[np.ndarray, list[tuple[int, int]]]:
+        """[T, 37] tag logits for one window, and each token's character offsets."""
+        if self._encoder is None:
+            self._load()
+        enc = self._tokenizer.encode(piece, add_special_tokens=False)
+        if len(enc.ids) > MODEL_MAX_TOKENS:  # windows() keeps pieces under WINDOW_TOKENS; never feed more
+            raise RuntimeError(f"PII-Tracer window of {len(enc.ids)} tokens exceeds {MODEL_MAX_TOKENS}")
+        if not enc.ids:
+            return np.zeros((0, len(LABELS))), []
+        return self._encoder.logits(enc.ids), enc.offsets
+
     def find(self, text: str) -> list[Found]:
         """The model's PII spans in `text` (any length), as it predicts them: they may cut through a word."""
-        if self._model is None:
-            self._load()
-        torch = self._torch
         found = []
         for offset, piece in windows(text, self.count_tokens):
-            enc = self._tokenizer.encode(piece, add_special_tokens=False)
-            if not enc.ids:
-                continue
-            if len(enc.ids) > MODEL_MAX_TOKENS:  # windows() keeps pieces under WINDOW_TOKENS; never feed more
-                raise RuntimeError(f"PII-Tracer window of {len(enc.ids)} tokens exceeds {MODEL_MAX_TOKENS}")
-            ids = torch.tensor([enc.ids], device=self._device)
-            with torch.inference_mode():
-                hidden = self._model(input_ids=ids, attention_mask=torch.ones_like(ids)).last_hidden_state
-                logits = (hidden[0].float() @ self._head_w.T + self._head_b).cpu().numpy()
+            logits, offsets = self.logits(piece)
             found.extend(
                 Found(offset + f.start, offset + f.end, f.label)
-                for f in decode(logits, enc.offsets, piece, *self._biases)
+                for f in decode(logits, offsets, piece, *self._encoder.biases)
             )
         return found
+
+
+class _TorchEncoder:
+    """The encoder on PyTorch through transformers' Qwen3Model, run bidirectionally."""
+
+    @staticmethod
+    def check_installed() -> None:
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
+
+    def __init__(self, weights_path: str, backbone: dict, device: str, dtype: str = "bfloat16"):
+        import torch
+        from safetensors.torch import load_file
+        from transformers import Qwen3Config, Qwen3Model
+
+        backbone_config = Qwen3Config.from_dict(backbone)
+        backbone_config.is_causal = False  # an encoder: every token sees the whole window
+        backbone_config._attn_implementation = "sdpa"
+        weights = load_file(weights_path)
+        model = Qwen3Model(backbone_config)
+        # Weights in bf16 like the checkpoint (fp32 only in tests); the rotary position buffers stay fp32, as
+        # transformers keeps them. Casting those too shifts every logit (by up to 0.25 against the reference code).
+        buffers = {name: b.clone() for name, b in model.named_buffers()}
+        model = model.to(getattr(torch, dtype))
+        for name, b in buffers.items():
+            owner, _, attr = name.rpartition(".")
+            setattr(model.get_submodule(owner), attr, b)
+        missing, unexpected = model.load_state_dict(
+            {k.removeprefix("backbone."): v for k, v in weights.items() if k.startswith("backbone.")}, strict=False
+        )
+        if unexpected or any("inv_freq" not in k for k in missing):
+            raise RuntimeError(f"PII-Tracer weights don't match the model: {missing[:3]} {unexpected[:3]}")
+        if device == "auto":
+            device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
+        self._torch = torch
+        self._device = device
+        self._model = model.to(device).eval()
+        self._head_w = weights["token_cls_head.weight"].float().to(device)
+        self._head_b = weights["token_cls_head.bias"].float().to(device)
+        self.biases = (float(weights["viterbi.b_bias"]), float(weights["viterbi.e_bias"]))
+
+    def logits(self, ids: list[int]) -> np.ndarray:
+        torch = self._torch
+        t = torch.tensor([ids], device=self._device)
+        with torch.inference_mode():
+            hidden = self._model(input_ids=t, attention_mask=torch.ones_like(t)).last_hidden_state
+            return (hidden[0].float() @ self._head_w.T + self._head_b).cpu().numpy()
+
+
+class _MlxEncoder:
+    """The same Qwen3 encoder written directly in MLX: RMSNorm, per-head q/k RMSNorm, RoPE, grouped-query
+    attention with no mask (bidirectional), SiLU-gated MLP. Same bf16 weights as the PyTorch encoder."""
+
+    @staticmethod
+    def check_installed() -> None:
+        import mlx.core  # noqa: F401
+
+    def __init__(self, weights_path: str, backbone: dict, device: str):
+        import mlx.core as mx
+
+        weights = mx.load(weights_path)
+        self._mx = mx
+        self._w = {k.removeprefix("backbone."): v for k, v in weights.items() if k.startswith("backbone.")}
+        self._layers = backbone["num_hidden_layers"]
+        self._heads = backbone["num_attention_heads"]
+        self._kv_heads = backbone["num_key_value_heads"]
+        self._head_dim = backbone["head_dim"]
+        self._eps = backbone["rms_norm_eps"]
+        self._theta = float((backbone.get("rope_parameters") or {}).get("rope_theta", backbone.get("rope_theta")))
+        self._head_w = weights["token_cls_head.weight"].astype(mx.float32)
+        self._head_b = weights["token_cls_head.bias"].astype(mx.float32)
+        self.biases = (float(weights["viterbi.b_bias"].item()), float(weights["viterbi.e_bias"].item()))
+        mx.eval(self._w, self._head_w, self._head_b)
+
+    def _attention(self, h, p: str):
+        mx, w, n = self._mx, self._w, h.shape[1]
+
+        def heads(name: str, count: int, norm: str | None):
+            x = (h @ w[f"{p}self_attn.{name}.weight"].T).reshape(1, n, count, self._head_dim)
+            if norm is not None:
+                x = mx.fast.rms_norm(x, w[f"{p}self_attn.{norm}.weight"], self._eps)
+            return x.transpose(0, 2, 1, 3)
+
+        q = heads("q_proj", self._heads, "q_norm")
+        k = heads("k_proj", self._kv_heads, "k_norm")
+        v = heads("v_proj", self._kv_heads, None)
+        q = mx.fast.rope(q, self._head_dim, traditional=False, base=self._theta, scale=1.0, offset=0)
+        k = mx.fast.rope(k, self._head_dim, traditional=False, base=self._theta, scale=1.0, offset=0)
+        a = mx.fast.scaled_dot_product_attention(q, k, v, scale=self._head_dim**-0.5)  # no mask: bidirectional
+        return a.transpose(0, 2, 1, 3).reshape(1, n, -1) @ w[f"{p}self_attn.o_proj.weight"].T
+
+    def logits(self, ids: list[int]) -> np.ndarray:
+        mx, w = self._mx, self._w
+        x = w["embed_tokens.weight"][mx.array(ids)][None]
+        for i in range(self._layers):
+            p = f"layers.{i}."
+            x = x + self._attention(mx.fast.rms_norm(x, w[f"{p}input_layernorm.weight"], self._eps), p)
+            h = mx.fast.rms_norm(x, w[f"{p}post_attention_layernorm.weight"], self._eps)
+            gate = h @ w[f"{p}mlp.gate_proj.weight"].T
+            x = x + ((gate * mx.sigmoid(gate)) * (h @ w[f"{p}mlp.up_proj.weight"].T)) @ w[f"{p}mlp.down_proj.weight"].T
+        x = mx.fast.rms_norm(x, w["norm.weight"], self._eps)
+        out = x[0].astype(mx.float32) @ self._head_w.T + self._head_b
+        return np.array(out)
 
 
 def spans_for(text: str, found: Iterable[Found], labels: Iterable[str]) -> list[tuple[int, int, str]]:
