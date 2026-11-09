@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
 
     redaction = sub.add_parser("redaction", help="compare redaction detectors; counts here, chat text in --out")
     add_window_args(redaction)
-    redaction.add_argument("--out", type=Path, default=Path("reports/redaction-eval.md"), help="private report")
+    redaction.add_argument("--out", type=Path, default=Path("reports/redaction-eval.html"), help="private report")
     redaction.add_argument("--detectors", default="presidio,pii_tracer", help="comma-separated detectors to compare")
     redaction.add_argument("--keep", help="comma-separated names that should never be redacted (default: AI tools)")
     redaction.add_argument("--sample", type=int, default=50, help="spans per section to list for hand-labelling")

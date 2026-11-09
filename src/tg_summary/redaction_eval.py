@@ -4,13 +4,17 @@ Runs each statistical detector (Presidio, PII-Tracer) on its own over the chunk 
 get, next to the always-on member-name and URL/email/handle rules. Detectors are called directly, so nothing
 is redacted, sent or added to the vault.
 
-The terminal gets counts only. The report file holds chat text (spans in their lines, for hand-labelling) and
-belongs somewhere private and git-ignored; `reports/` is the default.
+The terminal gets counts only. The report is a self-contained HTML page for hand-labelling: each span in its
+line, buttons (or keys 1-3) to label it, live tallies, and a box with the counts alone to copy. It holds chat
+text and belongs somewhere private and git-ignored; `reports/` is the default. Labels are kept in the
+browser's local storage for that page.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import random
 import re
 import sys
@@ -49,8 +53,8 @@ class _Tally:
     spans: int = 0
     kinds: Counter[str] = field(default_factory=Counter)
     member_hits: int = 0
-    keep_hits: list[tuple[str, str]] = field(default_factory=list)  # (span text, its line)
-    only_this: list[tuple[str, str, str]] = field(default_factory=list)  # (kind, note, its line)
+    keep_hits: list[tuple[str, str, str]] = field(default_factory=list)  # (before, span, after) on its line
+    only_this: list[tuple[str, str, str, str, str]] = field(default_factory=list)  # (kind, note, before, span, after)
 
 
 def run_redaction_eval(
@@ -97,10 +101,10 @@ def run_redaction_eval(
             for s in spans:
                 excerpt = text[s.start : s.end]
                 if keep_re.search(excerpt):
-                    t.keep_hits.append((excerpt, _line(text, s)))
+                    t.keep_hits.append(_line(text, s))
                 if not covers(others, s):
                     partly = any(o.start < s.end and s.start < o.end for o in others)
-                    t.only_this.append((s.kind, "partly covered by others" if partly else "", _line(text, s)))
+                    t.only_this.append((s.kind, "partly covered by others" if partly else "", *_line(text, s)))
         _log(f"chunk {i}/{len(chunks)} checked")
 
     _write_report(args.out, args, len(messages), len(chunks), members, tallies)
@@ -127,12 +131,12 @@ def covers(spans: Iterable[Span], span: Span) -> bool:
     return reach >= span.end
 
 
-def _line(text: str, span: Span) -> str:
-    """The line holding the span, with the span marked as >>span<<."""
+def _line(text: str, span: Span) -> tuple[str, str, str]:
+    """The line holding the span, split as (text before it, the span, text after it)."""
     start = text.rfind("\n", 0, span.start) + 1
     end = text.find("\n", span.end)
     end = len(text) if end == -1 else end
-    return f"{text[start : span.start]}>>{text[span.start : span.end]}<<{text[span.end : end]}"
+    return text[start : span.start], text[span.start : span.end], text[span.end : end]
 
 
 def _summary_table(members: int, tallies: dict[str, _Tally]) -> str:
@@ -146,62 +150,167 @@ def _summary_table(members: int, tallies: dict[str, _Tally]) -> str:
     return "\n".join(rows)
 
 
+_ONLY_OPTIONS = ["PII, complete", "PII, incomplete (part left outside the highlight)", "not PII"]
+_KEEP_OPTIONS = ["not PII (should stay readable)", "real PII"]
+
+
 def _write_report(
     out: Path, args: argparse.Namespace, n_messages: int, n_chunks: int, members: int, tallies: dict[str, _Tally]
 ) -> None:
     rng = random.Random(0)
-    parts = [
-        "# Redaction detector comparison",
-        "",
-        "**Private: this file contains chat text. Keep it local and out of git.**",
-        "",
-        (
+    sections, keep_sections = [], []  # the review lists first; keep-list hits after
+    for name, t in tallies.items():
+        keep = t.keep_hits[: args.sample]
+        keep_sections.append(
+            {
+                "id": f"{name}-keep",
+                "title": f"{name}: keep-list hits",
+                "total": len(t.keep_hits),
+                "help": "Spans containing a tool or product name. Is the highlighted text something to hide?",
+                "options": _KEEP_OPTIONS,
+                "items": [{"before": b, "span": s, "after": a} for b, s, a in keep],
+            }
+        )
+        sample = rng.sample(t.only_this, min(args.sample, len(t.only_this)))
+        sections.append(
+            {
+                "id": f"{name}-only",
+                "title": f"{name}: not fully covered by any other detector or rule",
+                "total": len(t.only_this),
+                "help": (
+                    'Should the highlighted text be hidden from a hosted model? "Partly covered" spans reach beyond '
+                    "another detector's find, e.g. a surname after a first name: judge that extra part."
+                ),
+                "options": _ONLY_OPTIONS,
+                "items": [
+                    {"kind": kind, "note": note, "before": b, "span": s, "after": a} for kind, note, b, s, a in sample
+                ],
+            }
+        )
+    sections += keep_sections
+    data = {
+        "intro": (
             f"{n_messages} messages in {n_chunks} chunk(s), the text a hosted summarizer would receive. "
             "Member-name and URL/email/handle rules always run; this compares the statistical detectors on top."
         ),
-        "",
-        _summary_table(members, tallies),
-        "",
-        (
-            "- **Member names fully caught**: mentions of group members (known from the member list) whose every "
-            "character the detector covered on its own; finding only a first name doesn't count. A rough measure "
-            "of how well it finds names in this chat."
-        ),
-        "- **Keep-list hits**: spans containing a tool or product name that should stay readable. Likely false positives.",
-        (
-            "- **Not fully covered by others**: spans with at least one character neither the other detector nor "
-            "the rules cover. A sample of these follows for hand-labelling."
-        ),
-        "",
-        "Spans by kind: "
-        + "; ".join(
-            f"{name}: " + ", ".join(f"{k} {n}" for k, n in t.kinds.most_common()) for name, t in tallies.items()
-        ),
-        "",
-    ]
-    for name, t in tallies.items():
-        parts += [f"## {name}: keep-list hits ({len(t.keep_hits)})", ""]
-        parts += [f"- `{_inert(line)}`" for _, line in t.keep_hits[: args.sample]] or ["(none)"]
-        parts += [""]
-        sample = rng.sample(t.only_this, min(args.sample, len(t.only_this)))
-        parts += [
-            f"## {name}: not fully covered by any other detector or rule ({len(t.only_this)}; {len(sample)} sampled)",
-            "",
-            "Mark each: is the marked text something that should be hidden from a hosted model? Spans marked",
-            '"partly covered" overlap another detector\'s find but reach further, e.g. a surname after a first name.',
-            "",
-        ]
-        parts += [
-            f"- [ ] PII  [ ] not PII  ({kind}{', ' + note if note else ''}) `{_inert(line)}`"
-            for kind, note, line in sample
-        ] or ["(none)"]
-        parts += [""]
+        "summary": _summary_table(members, tallies),
+        "kinds": {name: dict(t.kinds.most_common()) for name, t in tallies.items()},
+        "sections": sections,
+    }
+    payload = json.dumps(data, ensure_ascii=False)
+    key = hashlib.sha256(payload.encode()).hexdigest()[:16]  # labels survive reloads, not a different report
+    # Every "<" escaped, so no chat text (e.g. "</script>") can end the script block; the page builds the cards
+    # with text nodes only, so nothing in a message is ever parsed as HTML.
+    safe = payload.replace("<", "\\u003c")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(parts), encoding="utf-8")
+    out.write_text(_PAGE.replace("__KEY__", key).replace("__DATA__", safe), encoding="utf-8")
 
 
-def _inert(line: str) -> str:
-    return line.replace("`", "'")
+_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Redaction detector comparison (private)</title>
+<style>
+ body { font: 15px/1.45 system-ui, sans-serif; max-width: 70rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+ .warn { background: #fff3cd; padding: .5rem .8rem; border-radius: 6px; }
+ pre.summary { background: #f6f6f6; padding: .6rem; overflow-x: auto; }
+ #tally { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #ddd; padding: .5rem 0; z-index: 1; }
+ #tally table { border-collapse: collapse; font-size: 14px; }
+ #tally td, #tally th { padding: .15rem .6rem; text-align: right; } #tally td:first-child { text-align: left; }
+ .item { border: 1px solid #ddd; border-radius: 6px; padding: .5rem .7rem; margin: .5rem 0; outline: none;
+         scroll-margin-top: 12rem; }
+ .item:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #bfdbfe; }
+ .item.done { opacity: .55; } .item.done:focus { opacity: 1; }
+ .line { font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+ .hit { background: #fde68a; padding: 0 2px; border-radius: 3px; font-weight: 600; }
+ .meta { color: #666; font-size: 12px; } button { margin: .3rem .3rem 0 0; cursor: pointer; }
+ button.on { background: #2563eb; color: #fff; border-color: #2563eb; }
+ textarea { width: 100%; height: 9rem; font-family: ui-monospace, monospace; font-size: 12px; }
+</style></head><body>
+<h1>Redaction detector comparison</h1>
+<p class="warn"><b>Private:</b> this page contains chat text. Keep it local and out of git.</p>
+<p class="warn" id="nosave" hidden><b>Progress is not being saved:</b> this browser blocks storage for this page,
+so labels last only until you close or reload it. Copy the counts at the bottom before you leave.</p>
+<p id="intro"></p><pre class="summary" id="summary"></pre><p class="meta" id="kinds"></p>
+<p class="meta">Keys: <b>1</b>/<b>2</b>/<b>3</b> label the selected item and move on, <b>u</b> clears it,
+<b>j</b>/<b>k</b> or arrows move. Labels are saved in this browser for this report when it allows that.</p>
+<div id="tally"></div>
+<div id="sections"></div>
+<h2>Counts to share</h2>
+<p class="meta">Numbers only, no chat text.</p>
+<textarea id="counts" readonly></textarea><br><button id="copy">Copy counts</button>
+<script>
+const DATA = __DATA__;
+const KEY = "tg-summary-redaction-eval:__KEY__";
+// Storage can be refused (file:// pages, privacy settings): then labelling still works, in memory only.
+let saving = true, labels = {};
+const noSave = () => { saving = false; document.getElementById("nosave").hidden = false; };
+try { const kept = localStorage.getItem(KEY); try { labels = JSON.parse(kept || "{}") || {}; } catch (e) { labels = {}; } }
+catch (e) { noSave(); }
+function save() { if (!saving) return; try { localStorage.setItem(KEY, JSON.stringify(labels)); } catch (e) { noSave(); } }
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text; return e; };
+document.getElementById("intro").textContent = DATA.intro;
+document.getElementById("summary").textContent = DATA.summary;
+document.getElementById("kinds").textContent = "Spans by kind: " + Object.entries(DATA.kinds)
+  .map(([d, k]) => d + ": " + Object.entries(k).map(([n, c]) => n + " " + c).join(", ")).join("; ");
+const cards = [];
+for (const sec of DATA.sections) {
+  const box = el("section");
+  box.append(el("h2", null, `${sec.title} (${sec.items.length} shown of ${sec.total})`), el("p", "meta", sec.help));
+  if (!sec.items.length) box.append(el("p", "meta", "(none)"));
+  sec.items.forEach((it, i) => {
+    const id = sec.id + ":" + i, card = el("div", "item"); card.tabIndex = 0; card.dataset.id = id;
+    const meta = [it.kind, it.note].filter(Boolean).join(", ");
+    if (meta) card.append(el("div", "meta", meta));
+    const line = el("div", "line"); line.append(el("span", null, it.before), el("span", "hit", it.span),
+      el("span", null, it.after)); card.append(line);
+    sec.options.forEach((opt, n) => { const b = el("button", null, `${n + 1} · ${opt}`); b.dataset.n = n;
+      b.onclick = () => { setLabel(card, n); }; card.append(b); });
+    card.sec = sec; box.append(card); cards.push(card); paint(card);
+  });
+  document.getElementById("sections").append(box);
+}
+function paint(card) { const v = labels[card.dataset.id];
+  card.classList.toggle("done", v !== undefined);
+  card.querySelectorAll("button").forEach(b => b.classList.toggle("on", String(v) === b.dataset.n)); }
+function setLabel(card, n) {
+  if (n === null) delete labels[card.dataset.id]; else labels[card.dataset.id] = n;
+  save(); paint(card); tally();
+  if (n !== null) { const next = cards.slice(cards.indexOf(card) + 1).find(c => labels[c.dataset.id] === undefined);
+    (next || card).focus(); (next || card).scrollIntoView({ block: "center" }); } }
+function tally() {
+  const t = el("table"), head = el("tr"); head.append(el("th", null, "Section"));
+  const rows = [], lines = [DATA.intro, DATA.summary, ""];
+  for (const sec of DATA.sections) {
+    const counts = sec.options.map(() => 0); let open = 0;
+    sec.items.forEach((_, i) => { const v = labels[sec.id + ":" + i]; if (v === undefined) open++; else counts[v]++; });
+    const tr = el("tr"); tr.append(el("td", null, sec.title));
+    sec.options.forEach((o, n) => tr.append(el("td", null, `${o.split(" (")[0]}: ${counts[n]}`)));
+    tr.append(el("td", null, `unlabelled: ${open}`)); rows.push(tr);
+    lines.push(`${sec.title} (${sec.items.length} of ${sec.total}): ` +
+      sec.options.map((o, n) => `${o} ${counts[n]}`).join(", ") + `, unlabelled ${open}`);
+  }
+  t.append(...rows); const box = document.getElementById("tally"); box.replaceChildren(t);
+  document.getElementById("counts").value = lines.join("\\n");
+}
+document.getElementById("copy").onclick = () => { const c = document.getElementById("counts");
+  c.select(); (navigator.clipboard ? navigator.clipboard.writeText(c.value) : Promise.reject())
+    .catch(() => document.execCommand("copy")); };
+document.addEventListener("keydown", e => {
+  const card = document.activeElement.closest ? document.activeElement.closest(".item") : null;
+  if (e.target.tagName === "TEXTAREA") return;
+  const move = d => { const i = card ? cards.indexOf(card) + d : 0, c = cards[Math.max(0, Math.min(cards.length - 1, i))];
+    if (c) { c.focus(); c.scrollIntoView({ block: "center" }); } };
+  if (e.key === "j" || e.key === "ArrowDown") { move(1); e.preventDefault(); }
+  else if (e.key === "k" || e.key === "ArrowUp") { move(-1); e.preventDefault(); }
+  else if (card && e.key === "u") setLabel(card, null);
+  else if (card && /^[1-9]$/.test(e.key) && +e.key <= card.sec.options.length) setLabel(card, +e.key - 1);
+});
+tally();
+(cards.find(c => labels[c.dataset.id] === undefined) || cards[0] || document.body).focus();
+</script></body></html>
+"""
 
 
 def _log(msg: str) -> None:

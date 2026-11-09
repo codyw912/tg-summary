@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from tg_summary import pii_tracer
@@ -51,7 +52,7 @@ def test_comparison_prints_counts_only_and_lists_disagreements_for_labelling(exp
     printed = capsys.readouterr()
     for chat_text in ("Mount Tam", "Alice", "Bram", "stove", "trailhead"):
         assert chat_text not in printed.out and chat_text not in printed.err
-    report = out.read_text()
+    report = _sections(out)
 
     def row(name: str) -> list[str]:
         line = next(line for line in printed.out.splitlines() if line.startswith(f"| {name} |"))
@@ -60,8 +61,8 @@ def test_comparison_prints_counts_only_and_lists_disagreements_for_labelling(exp
     tracer, presidio = row("pii_tracer"), row("presidio")
     assert tracer[2].endswith("(100%)") and int(tracer[3]) >= 1  # every member mention; the product name flagged
     assert not presidio[2].endswith("(100%)") and presidio[3] == "0"
-    assert ">>Mount Tam<<" in report.split("## presidio: not fully covered")[1]
-    assert ">>stove<<" in report.split("## pii_tracer: keep-list hits")[1]
+    assert any(i["span"] == "Mount Tam" for i in report["presidio-only"]["items"])
+    assert any(i["span"] == "stove" for i in report["pii_tracer-keep"]["items"])
 
 
 def _span(start: int, end: int) -> Span:
@@ -101,13 +102,40 @@ def test_a_span_reaching_beyond_the_other_detectors_find_is_listed_for_review(
         "find",
         lambda self, t: [Found(s.start, s.end, "private_address") for s in spans(t, "Alice Moreau|Mount Tam")],
     )
-    out = tmp_path / "report.md"
+    out = tmp_path / "report.html"
     assert main(["redaction", "--db", str(tmp_path / "chat.sqlite"), "--config", str(config), "--out", str(out)]) == 0
 
     rows = {line.split("|")[1].strip(): line for line in capsys.readouterr().out.splitlines() if line.startswith("| ")}
-    review = out.read_text().split("## pii_tracer: not fully covered")[1]
-    assert ">>Mount Tam<<" in review and "partly covered by others" in review
-    assert ">>Alice Moreau<<" not in review  # fully covered by the member-name rule
+    review = _sections(out)["pii_tracer-only"]["items"]
+    assert {"span": "Mount Tam", "note": "partly covered by others"}.items() <= next(
+        i for i in review if i["span"] == "Mount Tam"
+    ).items()
+    assert not any(i["span"] == "Alice Moreau" for i in review)  # fully covered by the member-name rule
     # Presidio's "Alice" inside "Alice Moreau" isn't a caught member mention.
     caught, total = map(int, re.search(r"(\d+)/(\d+)", rows["presidio"]).groups())
     assert caught < total
+
+
+def _sections(path) -> dict[str, dict]:
+    """The report's embedded data, by section id."""
+    page = path.read_text(encoding="utf-8")
+    payload = page.split("const DATA = ", 1)[1].split(";\nconst KEY", 1)[0]
+    return {s["id"]: s for s in json.loads(payload)["sections"]}
+
+
+def test_the_report_page_cannot_be_broken_or_scripted_by_chat_text(tmp_path):
+    import argparse
+
+    from tg_summary.redaction_eval import _Tally, _write_report
+
+    hostile = '</script><img src=x onerror="alert(1)"><!--'
+    tally = _Tally(spans=1)
+    tally.only_this.append(("PERSON", "", f"see {hostile} ", "Alice", " </SCRIPT> end"))
+    out = tmp_path / "report.html"
+    _write_report(out, argparse.Namespace(sample=50), 1, 1, 1, {"presidio": tally})
+
+    page = out.read_text(encoding="utf-8")
+    assert page.lower().count("</script>") == 1  # only the page's own closing tag
+    assert "<img" not in page and "<!--" not in page.split("<script>", 1)[1]
+    item = _sections(out)["presidio-only"]["items"][0]
+    assert (item["before"], item["span"], item["after"]) == (f"see {hostile} ", "Alice", " </SCRIPT> end")
