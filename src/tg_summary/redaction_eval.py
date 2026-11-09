@@ -5,7 +5,7 @@ get, next to the always-on member-name and URL/email/handle rules. Detectors are
 is redacted, sent or added to the vault.
 
 The terminal gets counts only. The report is a self-contained HTML page for hand-labelling: each span in its
-line, buttons (or keys 1-3) to label it, live tallies, and a box with the counts alone to copy. It holds chat
+line, buttons (or number keys) to label it, live tallies, and a box with the counts alone to copy. It holds chat
 text and belongs somewhere private and git-ignored; `reports/` is the default. Labels are kept in the
 browser's local storage for that page.
 """
@@ -150,8 +150,11 @@ def _summary_table(members: int, tallies: dict[str, _Tally]) -> str:
     return "\n".join(rows)
 
 
-_ONLY_OPTIONS = ["PII, complete", "PII, incomplete (part left outside the highlight)", "not PII"]
-_KEEP_OPTIONS = ["not PII (should stay readable)", "real PII"]
+# Public figures get their own label: redacting them is deliberate (see DESIGN.md, "Public figures"), so those
+# are harmless over-redaction, unlike products, general places and ordinary words.
+_PUBLIC = "public figure (fine to redact)"
+_ONLY_OPTIONS = ["PII, complete", "PII, incomplete (part left outside the highlight)", "not PII", _PUBLIC]
+_KEEP_OPTIONS = ["not PII (should stay readable)", "real PII", _PUBLIC]
 
 
 def _write_report(
@@ -179,7 +182,8 @@ def _write_report(
                 "total": len(t.only_this),
                 "help": (
                     'Should the highlighted text be hidden from a hosted model? "Partly covered" spans reach beyond '
-                    "another detector's find, e.g. a surname after a first name: judge that extra part."
+                    "another detector's find, e.g. a surname after a first name: judge that extra part. Names of "
+                    "public figures get their own label (4): redacting them is fine."
                 ),
                 "options": _ONLY_OPTIONS,
                 "items": [
@@ -232,7 +236,7 @@ _PAGE = """<!doctype html>
 <p class="warn" id="nosave" hidden><b>Progress is not being saved:</b> this browser blocks storage for this page,
 so labels last only until you close or reload it. Copy the counts at the bottom before you leave.</p>
 <p id="intro"></p><pre class="summary" id="summary"></pre><p class="meta" id="kinds"></p>
-<p class="meta">Keys: <b>1</b>/<b>2</b>/<b>3</b> label the selected item and move on, <b>u</b> clears it,
+<p class="meta">Keys: <b>1</b>-<b>4</b> label the selected item and move on, <b>u</b> clears it,
 <b>j</b>/<b>k</b> or arrows move. Labels are saved in this browser for this report when it allows that.</p>
 <div id="tally"></div>
 <div id="sections"></div>

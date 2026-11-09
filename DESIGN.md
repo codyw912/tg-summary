@@ -256,17 +256,22 @@ text a hosted summarizer would get, next to the always-on member-name and URL/em
 detectors directly, so nothing is redacted, sent or added to the vault.
 
 ```sh
-tg-summary-eval redaction --db chat.sqlite --config config.toml --last 2000 --out reports/redaction-eval.md
+tg-summary-eval redaction --db chat.sqlite --config config.toml --last 2000 --out reports/redaction-eval.html
 ```
 
 - **The terminal gets counts only**: spans per detector, member-name mentions each covers completely on its
   own (the member list gives these labels for free; a first name alone doesn't count), hits on a keep-list of
   names that should stay readable (AI tools by default; `--keep` to change it), and spans that the other
   detector and the rules together don't cover completely. Coverage is per character, never just overlap.
-- **The report contains chat text**, by design: each keep-list hit, and a sample (`--sample`, default 50) of
-  spans not fully covered by others, shown in their line with a box to mark "PII" or "not PII"; spans that
-  reach beyond another detector's find (a surname after a first name) are marked "partly covered". Labelling
-  those settles what each detector adds. It goes to `reports/`, which is git-ignored.
+- **The report is an HTML page for labelling, and contains chat text** by design: each keep-list hit, and a
+  sample (`--sample`, default 50) of spans not fully covered by others, each shown in its line with the span
+  highlighted and buttons (or number keys) to label it: PII (complete, or with part left outside the
+  highlight), not PII, or a public figure, which is fine to redact (see [Public figures](#public-figures)).
+  Spans that reach beyond another detector's find (a surname after a first name) are marked "partly
+  covered". Tallies update as you label, labels are kept in the browser's local storage when it allows that
+  (a banner says when it doesn't), and a box holds the counts alone to copy. The page is self-contained (its
+  content policy blocks every network request) and inserts chat text as plain text, never as HTML. It goes
+  to `reports/`, which is git-ignored.
 
 ## Jobs and roles
 
@@ -553,6 +558,16 @@ member-name rule covers senders.
 
   A separate preview per item is needed because detection depends on context: redacting a whole chunk can
   find different things than redacting one message.
+
+### Public figures
+
+Names of public figures (authors, maintainers, executives) are redacted like anyone else's, on purpose. No
+detector can tell a famous name from a private person who shares it, and an exemption list would be the leaky
+direction: a member called Chris Evans would go out unredacted. Over-redacting them costs little, because
+redaction is reversible: the hosted model sees a consistent `[PERSON_7]` and the report shows the real name.
+What is lost is the model's background knowledge about that person, which a chat digest rarely needs. Use
+`redaction.allow` for names you want sent as-is. (A notability-filtered list from Wikidata could become an
+opt-in exemption later, if over-redaction turns out to hurt summaries.)
 
 ### What redaction does not cover
 
