@@ -1,0 +1,16 @@
+# Chat data never belongs in git.
+data/
+reports/
+ChatExport*/
+result.json
+*.sqlite
+*.sqlite-*
+config.toml
+variants.toml
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+logs/

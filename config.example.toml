@@ -1,0 +1,138 @@
+# Copy to config.toml (git-ignored) and edit.
+#
+# Endpoints say where a model lives and how far it is trusted:
+#   trust = "private"   may see raw chat text (your machine, your LAN inference server)
+#   trust = "external"  gets chat text redacted (refuses to run if redaction fails); media files and URLs
+#                       sent to it for the media and link stage go unchanged
+# api = "openai" covers LM Studio, oMLX, llama-server, vLLM and most hosted providers (/v1/chat/completions).
+# api = "anthropic" speaks the Anthropic Messages API (/v1/messages).
+
+[endpoints.lmstudio]
+api = "openai"
+base_url = "http://localhost:1234/v1"
+trust = "private"
+
+[endpoints.llama_server]
+api = "openai"
+base_url = "http://localhost:8080/v1"   # llama-server, vLLM, or anything else OpenAI-compatible
+trust = "private"
+
+[endpoints.claude]
+api = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"   # the key itself never goes in this file
+trust = "external"
+
+# Which model does the summarizing. Point `endpoint` at any entry above.
+[roles.summarize]
+endpoint = "lmstudio"
+model = "qwen/qwen3.6-35b-a3b"
+context_tokens = 32768       # what the server is configured to accept
+max_output_tokens = 4096     # output limit when thinking is off; thinking_tokens adds headroom when on
+structured = "json_schema"   # "prompt" if the server rejects response_format; output is validated either way
+                             # (oMLX skips thinking entirely under json_schema; use "prompt" if thinking is on)
+concurrency = 1              # parallel chunk requests; raise for servers with continuous batching
+# Reasoning. Unset = the server's default (Qwen thinks by default). false = off; true or a level
+# ("minimal", "low", "medium", "high", "xhigh", "max") = on. Off is a provisional recommendation for
+# summarize until `tg-summary-eval compare` results confirm it (see DESIGN.md).
+thinking = false
+thinking_tokens = 8192       # with thinking on: extra headroom added to max_output_tokens (shared, not reserved)
+# Sampling: "default" sends nothing. Qwen's non-thinking preset; thinking: 1.0 / 0.95 / 20 / 0.0.
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+presence_penalty = 1.5       # OpenAI-compatible servers only
+
+# Optional: a different model or reasoning setting for merges and the final digest (default: summarize).
+# [roles.digest]
+# endpoint = "lmstudio"
+# model = "qwen/qwen3.6-35b-a3b"
+# thinking = "low"
+# temperature = 1.0
+# top_p = 0.95
+# top_k = 20
+# presence_penalty = 0.0
+
+# Optional: checks digest claims in `tg-summary-eval compare` and `judge`. It reads cited messages unredacted, so its
+# endpoint must be trust = "private".
+# [roles.judge]
+# endpoint = "lmstudio"
+# model = "qwen/qwen3.6-35b-a3b"
+# thinking = false
+
+[summarize]
+chunk_tokens = 8000   # upper bound per chunk; smaller chunks keep more detail but cost more calls
+gap_minutes = 120     # silences longer than this are marked as conversation breaks
+
+[redaction]
+spacy_model = "en_core_web_md"
+language = "en"
+score_threshold = 0.35   # lower redacts more; Presidio scores bare phone numbers at 0.4
+# Words that must never be redacted, e.g. a member called "Will" whose first name is also a common word.
+allow = ["Deleted Account"]
+
+# --- Media and link stage (optional). Runs before chunking when any of these roles is configured. ---
+# Hosted calls get one item plus its message text (redacted for trust = "external"); media files and the
+# link itself are sent as-is. Results are cached per file hash / URL in the chat database.
+
+# Speech to text over /v1/audio/transcriptions. Tested: oMLX with parakeet-ultra-nounk-mlx loaded (shown),
+# or mlx-audio's server: uvx --python 3.12 --from 'mlx-audio[server]' mlx_audio.server --port 8094
+# (base_url http://127.0.0.1:8094/v1, model mlx-community/parakeet-tdt-0.6b-v3).
+# [endpoints.omlx_stt]
+# api = "openai"
+# base_url = "http://localhost:8000/v1"
+# trust = "private"
+#
+# [roles.transcribe]
+# endpoint = "omlx_stt"
+# model = "parakeet-ultra-nounk-mlx"
+
+# [roles.describe_media]
+# endpoint = "claude"
+# model = "claude-haiku-5-5"
+# max_output_tokens = 1024
+# max_calls = 200            # per run; items beyond it keep their placeholder and are counted in the report
+
+# Uses the provider's own web fetch; nothing is fetched from this machine. For api = "anthropic" the
+# web_fetch tool is added automatically; other providers need their tools in extra_body.
+# [roles.read_link]
+# endpoint = "claude"
+# model = "claude-haiku-5-5"
+# max_output_tokens = 2048
+# concurrency = 2
+# max_calls = 200
+# extra_body = { tools = [{ type = "web_fetch_20260209", name = "web_fetch", max_uses = 3 }] }   # optional override
+
+[media]
+# describe | transcribe | skip, per kind
+photo = "describe"
+video = "describe"          # key frames + transcript unless the model accepts video
+animation = "describe"
+video_message = "transcribe"
+voice = "transcribe"
+audio = "skip"
+document = "skip"           # "describe" sends images and PDFs only
+sticker = "skip"            # "describe" sends static .webp only
+frames = 4                  # key frames per video
+
+[links]
+enabled = true
+# URL prefixes (no scheme, no "www.") that are never sent: private message links and invite links.
+skip = ["t.me/c/", "t.me/+", "t.me/joinchat/", "telegram.me/c/", "telegram.me/+", "telegram.me/joinchat/"]
+# Per-site handling by domain (subdomains included, longest match wins, "*" = everything else):
+#   read  = open and summarize in 1-3 sentences (default)
+#   brief = one fetch, one sentence: title, author or channel, topic. YouTube fetches its oEmbed metadata.
+#   skip  = never sent
+# Changing a site's rule re-reads its links on the next run.
+rules = { "youtube.com" = "brief", "youtu.be" = "brief" }
+# rules = { "youtube.com" = "brief", "youtu.be" = "brief", "x.com" = "skip", "twitter.com" = "skip" }
+page_tokens = 20000         # most page text one read fetch puts in front of the model (input cost)
+brief_page_tokens = 2000    # the same for brief
+
+[report]
+# "Appendix: all media and links": one line per processed photo, video, voice note and link with its
+# description, transcript or link summary, and links to the messages. It puts that content in the report.
+media_appendix = true
+# "Bangers": the most-reacted messages of the period, straight from the chat's reaction counts. 0 = off.
+# Reaction counts come from the export; re-run `tg-summary ingest` on a database made before this setting.
+bangers = 5
+bangers_min_reactions = 3

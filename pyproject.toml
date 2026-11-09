@@ -1,0 +1,43 @@
+[project]
+name = "tg-summary"
+version = "0.1.0"
+description = "Summarize a Telegram group's history with local LLMs, redacting chat text sent to hosted models"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.9",
+    "presidio-analyzer>=2.2",
+    "en-core-web-md",
+    "pydantic-ai-slim[anthropic,openai]==2.66.0",
+]
+
+[project.scripts]
+tg-summary = "tg_summary.cli:main"
+tg-summary-eval = "tg_summary.eval_cli:main"
+
+[tool.uv.sources]
+en-core-web-md = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl" }
+
+[dependency-groups]
+dev = [
+    "markdown-it-py[linkify]>=4.2.0",
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tg_summary"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = ["I", "B", "UP", "RUF"]

@@ -1,0 +1,27 @@
+# Variants for `tg-summary-eval compare`. Each [[variant]] overrides fields of the summarize and/or digest roles
+# from config.toml (any role field; `endpoint` names another configured endpoint; "default" sends nothing).
+# Without a [roles.digest] in config.toml, a variant's digest starts from that variant's summarize settings.
+#
+# Comparing models that can't be loaded together: one `compare --no-judge` per model on the same window, then
+# `tg-summary-eval judge --results a.json --results b.json --out both.json` with only the judge model loaded.
+# Variant names must be unique across those files.
+#
+# Sampling follows Qwen3.8's per-mode presets: non-thinking 0.7 / 0.8 / 20 / 1.5, thinking 1.0 / 0.95 / 20 / 0.
+
+[[variant]]
+name = "off"
+summarize = { thinking = false, temperature = 0.7, top_p = 0.8, top_k = 20, presence_penalty = 1.5 }
+
+[[variant]]
+name = "digest-low"
+summarize = { thinking = false, temperature = 0.7, top_p = 0.8, top_k = 20, presence_penalty = 1.5 }
+digest = { thinking = "low", temperature = 1.0, top_p = 0.95, top_k = 20, presence_penalty = 0.0 }
+
+[[variant]]
+name = "digest-medium"
+summarize = { thinking = false, temperature = 0.7, top_p = 0.8, top_k = 20, presence_penalty = 1.5 }
+digest = { thinking = "medium", temperature = 1.0, top_p = 0.95, top_k = 20, presence_penalty = 0.0 }
+
+[[variant]]
+name = "on"
+summarize = { thinking = "xhigh", temperature = 1.0, top_p = 0.95, top_k = 20, presence_penalty = 0.0 }
