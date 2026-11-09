@@ -442,8 +442,11 @@ prompt contains no chat content and is sent as written.
 
 ### Detectors
 
-Listed in priority order. When spans overlap, escaped look-alikes win first. Member names, rules and known
-values share the next priority, and among them the longer span wins. Presidio comes last.
+Listed in priority order. Overlapping spans, whether they cross or one contains another, merge into one
+placeholder that covers all of them, so nothing any detector flagged is sent. The placeholder takes its kind
+from the strongest span: escaped look-alikes first, then member names, rules and known values (which share a
+priority), then Presidio, and the longer span among equals. It restores the exact covered text, or the
+strongest span's canonical value (such as the full name behind a first name) when the two cover the same text.
 
 1. **Escaped look-alikes.** Text in the source that already looks like a placeholder becomes `[LITERAL_n]`
    and is restored verbatim. That covers bracketed text (`[PERSON_3]`) and bare text (`PERSON_3`) for every

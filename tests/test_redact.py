@@ -2,13 +2,61 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tg_summary.redact import Redactor, RequestMap, RosterDetector, rehydrate, rule_detector
+from tg_summary.redact import P_NER, P_RULE, Redactor, RequestMap, RosterDetector, Span, rehydrate, rule_detector
 from tg_summary.store import Store
 
 
 def _redactor(tmp_path: Path, names=("Alice Moreau", "Bram Okafor")) -> Redactor:
     store = Store(tmp_path / "chat.sqlite")
     return Redactor(store.vault_assign, [RosterDetector(names), rule_detector])
+
+
+def _fixed(*spans: tuple[int, int, str, int]):
+    """A detector that always reports the given (start, end, kind, priority) spans."""
+    return lambda text: [Span(s, e, kind, text[s:e], p) for s, e, kind, p in spans]
+
+
+def test_crossing_spans_merge_so_nothing_either_detector_flagged_is_sent(tmp_path):
+    text = "call Bram Okafor Smith tomorrow"  # one detector flags "Bram Okafor", another "Okafor Smith"
+    detectors = [_fixed((5, 16, "PERSON", P_NER)), _fixed((10, 22, "LOCATION", P_NER))]
+    r = Redactor(Store(tmp_path / "chat.sqlite").vault_assign, detectors)
+    request = RequestMap()
+    sent = r.redact(text, request)
+    assert sent == "call [LOCATION_1] tomorrow"  # the longer span names the kind; both are covered
+    assert rehydrate(sent, request, []) == text
+
+
+def test_merged_regions_with_the_same_phone_number_stay_distinct(tmp_path):
+    # A phone number (high priority) crossing a low-priority span on each side: both merged regions keep the
+    # PHONE kind, but "Alice 1234" and "Bob 1234" must not share a placeholder, or one restores as the other.
+    text = "Alice 1234; Bob 1234"
+    detectors = [
+        _fixed((6, 10, "PHONE", P_RULE), (16, 20, "PHONE", P_RULE)),
+        _fixed((0, 8, "PERSON", P_NER), (12, 18, "PERSON", P_NER)),
+    ]
+    r = Redactor(Store(tmp_path / "chat.sqlite").vault_assign, detectors)
+    request = RequestMap()
+    sent = r.redact(text, request)
+    assert sent == "[PHONE_1]; [PHONE_2]"
+    assert rehydrate(sent, request, []) == text
+
+
+def test_a_name_inside_a_longer_lower_priority_span_covers_the_whole_span(tmp_path):
+    # The roster matches "Alice" (high priority); a statistical detector flags "Alice Lindqvist-Moreau" (low).
+    # Picking the roster match alone would send "Lindqvist-Moreau".
+    store = Store(tmp_path / "chat.sqlite")
+    text = "ask Alice Lindqvist-Moreau about it"
+    r = Redactor(store.vault_assign, [RosterDetector(["Alice Moreau"]), _fixed((4, 26, "PERSON", P_NER))])
+    request = RequestMap()
+    sent = r.redact(text, request)
+    assert sent == "ask [PERSON_1] about it"
+    assert rehydrate(sent, request, []) == text
+
+    # A low-priority span wholly inside a roster match keeps the roster's canonical value (the full name).
+    request = RequestMap()
+    r = Redactor(store.vault_assign, [RosterDetector(["Alice Moreau"]), _fixed((3, 8, "PERSON", P_NER))])
+    assert r.redact("hi alice!", request) == "hi [PERSON_2]!"
+    assert rehydrate("[PERSON_2]", request, []) == "Alice Moreau"
 
 
 def test_tokens_are_stable_across_requests_and_first_names_share_the_full_name_token(tmp_path):

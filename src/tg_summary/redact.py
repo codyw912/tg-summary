@@ -78,6 +78,9 @@ class Span:
     kind: str
     value: str  # canonical value restored on rehydration (e.g. full name for a first-name match)
     priority: int
+    # Set on a span merged from several that reaches beyond its strongest one: its identity is its whole text,
+    # not the kind's normalization (a PHONE's digits-only form would make "Alice 1234" equal "Bob 1234").
+    merged: bool = False
 
 
 Detector = Callable[[str], Iterable[Span]]
@@ -123,7 +126,7 @@ class Redactor:
         spans.extend(detected)
 
         out, pos = [], 0
-        for span in _non_overlapping(spans):
+        for span in _covering(spans, text):
             out.append(text[pos : span.start])
             out.append(self._token(span, request))
             pos = span.end
@@ -133,7 +136,8 @@ class Redactor:
     def _token(self, span: Span, request: RequestMap) -> str:
         if span.kind == LITERAL:
             return request.literal(span.value)
-        n = self._assign(span.kind, _normalize(span.kind, span.value), span.value)
+        norm = " ".join(span.value.split()) if span.merged else _normalize(span.kind, span.value)
+        n = self._assign(span.kind, norm, span.value)
         token = f"[{span.kind}_{n}]"
         request.tokens[token] = span.value
         self.counts[span.kind] += 1
@@ -298,12 +302,33 @@ def build_redactor(
 # --- helpers ---------------------------------------------------------------
 
 
-def _non_overlapping(spans: list[Span]) -> list[Span]:
-    chosen: list[Span] = []
-    for span in sorted(spans, key=lambda s: (-s.priority, -(s.end - s.start), s.start)):
-        if span.end > span.start and all(span.end <= c.start or span.start >= c.end for c in chosen):
-            chosen.append(span)
-    return sorted(chosen, key=lambda s: s.start)
+def _covering(spans: list[Span], text: str) -> list[Span]:
+    """One span per group of overlapping spans, covering all of them, so no character any detector flagged is
+    sent. Dropping one of two crossing spans would expose the part only it covered.
+
+    The merged span takes its kind from its strongest member (highest priority, then longest). It keeps that
+    member's canonical value when it covers exactly that member; otherwise its value is the covered text, so
+    restoring returns the original wording."""
+    out: list[Span] = []
+    group: list[Span] = []
+    end = 0
+    for span in sorted((s for s in spans if s.end > s.start), key=lambda s: s.start):
+        if group and span.start >= end:  # touching is not overlapping
+            out.append(_merge(group, end, text))
+            group = []
+        end = max(end, span.end) if group else span.end
+        group.append(span)
+    if group:
+        out.append(_merge(group, end, text))
+    return out
+
+
+def _merge(group: list[Span], end: int, text: str) -> Span:
+    start = group[0].start
+    best = max(group, key=lambda s: (s.priority, s.end - s.start, -s.start))
+    if (best.start, best.end) == (start, end):
+        return Span(start, end, best.kind, best.value, best.priority)
+    return Span(start, end, best.kind, text[start:end], best.priority, merged=True)
 
 
 def _normalize(kind: str, value: str) -> str:
