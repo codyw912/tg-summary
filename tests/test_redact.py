@@ -201,6 +201,29 @@ def test_rules_catch_urls_emails_handles_without_trailing_punctuation(tmp_path):
     assert sent == "see [URL_1], mail [EMAIL_1] or ping [HANDLE_1]."
 
 
+def test_bare_links_with_a_path_are_urls_but_dotted_names_and_file_paths_are_not(tmp_path):
+    r = _redactor(tmp_path, names=())
+    sent = r.redact(
+        "notes at private.example.org/u/ana. Built with Next.js and socket.io, see src/tg_summary/redact.py "
+        "and v1.2.3/beta, or www.example.com/x and https://example.net/y",
+        RequestMap(),
+    )
+    assert sent == (
+        "notes at [URL_1]. Built with Next.js and socket.io, see src/tg_summary/redact.py "
+        "and v1.2.3/beta, or [URL_2] and [URL_3]"
+    )
+
+
+def test_a_bare_link_carrying_a_full_link_is_redacted_whole(tmp_path):
+    # The nested https link is found first; the bare host and path around it must not be left exposed.
+    r = _redactor(tmp_path, names=())
+    request = RequestMap()
+    text = "go to private.example.org/u/ana?next=https://example.com/x now"
+    sent = r.redact(text, request)
+    assert sent == "go to [URL_1] now"
+    assert rehydrate(sent, request, []) == text
+
+
 def test_only_nt_contractions_spare_a_name_and_every_other_name_suffix_is_still_redacted(tmp_path):
     r = _redactor(tmp_path, names=("Don Draper", "Alice Moreau", "Haven Cole"))
     sent = r.redact(

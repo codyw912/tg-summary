@@ -27,6 +27,11 @@ LITERAL = "LITERAL"
 P_LITERAL, P_RULE, P_NER = 3, 2, 1
 
 _URL_RE = re.compile(r"(?:https?://|www\.|t\.me/)[^\s<>()\"']+", re.IGNORECASE)
+# Redaction only (links to fetch and render still need a scheme): a bare link with a path, like
+# "example.org/x". The path is required so dotted names like "Next.js" or "socket.io" stay readable.
+_BARE_LINK_RE = re.compile(
+    r"(?<![\w@./:-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}/[^\s<>()\"']+", re.IGNORECASE
+)
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _HANDLE_RE = re.compile(r"(?<![\w@./])@[A-Za-z][A-Za-z0-9_]{3,31}(?!\w)")
 _TRAILING_PUNCT = ".,;:!?)]}'\""
@@ -223,7 +228,15 @@ class RosterDetector:
 
 def rule_detector(text: str) -> Iterable[Span]:
     spans = []
-    for start, end, url in find_urls(text):
+    links = find_urls(text)
+    for m in _BARE_LINK_RE.finditer(text):
+        start, url = m.start(), m.group(0).rstrip(_TRAILING_PUNCT)
+        end = start + len(url)
+        # Skip only a match inside a link already found. A partial overlap, such as a bare link carrying a full
+        # link in its query, stays: the merge covers both, so the bare host and path are redacted too.
+        if not any(s <= start and end <= e for s, e, _ in links):
+            links.append((start, end, url))
+    for start, end, url in links:
         spans.append(Span(start, end, "URL", url, P_RULE))
     for m in _EMAIL_RE.finditer(text):
         spans.append(Span(m.start(), m.end(), "EMAIL", m.group(0), P_RULE))

@@ -489,7 +489,9 @@ member-name rule covers senders.
    joined by spaces, and as its first name alone when that first name is unique in the group and at least 3
    characters long.
    - Matching ignores case. Over-redacting is the safe failure, and `redaction.allow` handles false positives.
-3. **Rules** for URLs, email addresses and `@handles`.
+3. **Rules** for URLs, email addresses and `@handles`. A URL is a link with a scheme, `www.` or `t.me/`, or a
+   bare link with a path (`example.org/x`); the path is required so dotted names like `Next.js` stay readable.
+   A bare `example.org` is left to the detectors.
 4. **Known values.** Every value already in the vault is matched exactly wherever it appears. Presidio's
    detection depends on context: in testing it caught a place name in a chat line but missed the same name
    inside the JSON notes sent to the digest call. A false positive stays redacted until added to
